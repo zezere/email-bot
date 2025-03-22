@@ -1,12 +1,14 @@
 from datetime import datetime
 from database import get_user, add_user, save_email, email_exists
 from email_handler import EmailHandler
+from llm_handler import LLMHandler
 import email.utils
 
 
 class Bot:
     def __init__(self):
         self.email_handler = EmailHandler()
+        self.llm_handler = LLMHandler()
 
     def process_new_emails(self):
         emails = self.email_handler.check_inbox()
@@ -22,6 +24,17 @@ class Bot:
             subject = email.get("Subject", "")
             body = self._get_email_body(email)
             sent_at = email.get("Date", "")
+
+            # Moderate the email content
+            is_appropriate, moderation_result = self.llm_handler.moderate_email(body)
+
+            if not is_appropriate:
+                self.email_handler.send_email(
+                    sender_email,
+                    "Inappropriate Content Detected",
+                    f"Your email was flagged as inappropriate: {moderation_result}",
+                )
+                continue
 
             # Save email information to database
             save_email(
