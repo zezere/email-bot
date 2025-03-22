@@ -28,7 +28,9 @@ def init_db():
             sender_email TEXT,
             subject TEXT,
             body TEXT,
-            sent_at TIMESTAMP
+            sent_at TIMESTAMP,
+            is_appropriate BOOLEAN,
+            moderation_reason TEXT
         )
     """
     )
@@ -57,15 +59,36 @@ def add_user(email, goal):
     conn.close()
 
 
-def save_email(message_id, sender_name, sender_email, subject, body, sent_at):
+def save_email(
+    message_id,
+    sender_name,
+    sender_email,
+    subject,
+    body,
+    sent_at,
+    is_appropriate,
+    moderation_reason,
+):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute(
         """
-        INSERT INTO emails (message_id, sender_name, sender_email, subject, body, sent_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO emails (
+            message_id, sender_name, sender_email, subject, body, sent_at,
+            is_appropriate, moderation_reason
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (message_id, sender_name, sender_email, subject, body, sent_at),
+        (
+            message_id,
+            sender_name,
+            sender_email,
+            subject,
+            body,
+            sent_at,
+            is_appropriate,
+            moderation_reason,
+        ),
     )
     conn.commit()
     conn.close()
