@@ -1,5 +1,6 @@
 .env
 data/
+ai-cookbook-main/
 
 # Python
 __pycache__/
