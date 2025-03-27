@@ -115,18 +115,23 @@ def test_validation():
     - google/gemma-2-9b-it:free  sometimes returns empty response
     """
     from bot import is_valid_email_address
+    from time import perf_counter, sleep
 
     llm_handler = LLMHandler()
     validation_model = 'mistralai/mistral-small-24b-instruct-2501:free'
-    gt_model = 'deepseek/deepseek-chat-v3-0324:free'
+    #gt_model = 'deepseek/deepseek-chat-v3-0324:free'  # no structured output
+    #gt_model = 'google/gemini-2.5-pro-exp-03-25:free'  # structured output, but RESOURCE_EXHAUSTED
+    gt_model = 'google/gemini-2.0-flash-lite-preview-02-05:free'  # structured output
 
-    test_emails = get_test_emails(10)
+    test_emails = get_test_emails(100)
     test_labels = [None for _ in test_emails]
 
     print("\nTesting validation functionality")
     print("-" * 50)
-    print(f"Validation model: {validation_model}")
-    print(f"Ground truth: {gt_model}")
+    print(f"Validation model:   {validation_model}")
+    print(f"Ground truth model: {gt_model}")
+
+    times = {'gt': [], 'valid': []}  # measure agent's total response time
 
     for email_msg, label in zip(test_emails, test_labels):
         message_id = email_msg.get("Message-ID", "")
@@ -145,13 +150,29 @@ def test_validation():
         # Get label
         gt_reasoning = ''
         if label is None:
+            t0 = perf_counter()
             label, gt_reasoning = llm_handler.validate_email(sender_email, subject, body, model_id=gt_model)
+            times['gt'].append(perf_counter() - t0)
+
+            # Handle rate limits
+            if gt_reasoning == 'wait a minute':
+                print("waiting to pass rate-limit for free models...")
+                sleep(60)
+                t0 = perf_counter()
+                label, gt_reasoning = llm_handler.validate_email(sender_email, subject, body, model_id=gt_model)
+                times['gt'].append(perf_counter() - t0)
+            elif gt_reasoning == 'wait a day':
+                print("daily rate limit for free models reached, quitting.")
+                break
+
             if label not in {'pass', 'block'}:
-                print(f"FAILED to get valid ground truth label, got {gt_reasoning}")
+                print(f"FAILED to get valid ground truth label, got {label}: {gt_reasoning}")
                 continue
 
         # Test
+        t0 = perf_counter()
         response, reasoning = llm_handler.validate_email(sender_email, subject, body, model_id=validation_model)
+        times['valid'].append(perf_counter() - t0)
         if response == label:
             print(f"PASSED validation: {response}")
         else:
@@ -161,6 +182,15 @@ def test_validation():
                 print(f"    Validation LLM's reasoning:\n{reasoning}")
             if gt_reasoning:
                 print(f"    Ground-truth LLM's reasoning:\n{gt_reasoning}")
+
+    print("Validation test finished, agent average response time:")
+    if times['valid']:
+        avg_time = sum(times['valid']) / len(times['valid'])
+        print(f"    Validation model:   {avg_time:.1f} sec")
+    if times['gt']:
+        avg_time = sum(times['gt']) / len(times['gt'])
+        print(f"    Ground truth model: {avg_time:.1f} sec")
+
 
 def test_moderation():
     """Test the moderation functionality with various types of content."""

@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import requests
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -27,6 +28,12 @@ class LLMHandler:
         Returns True if email appears valid.
         """
         model_id = model_id or self.model_id
+        models_supporting_structured_output = {
+            'google/gemini-2.5-pro-exp-03-25:free',
+            'google/gemini-2.0-flash-lite-preview-02-05:free',
+            'google/gemma-3-27b-it:free',
+            'google/gemini-2.0-flash-exp:free',
+        }
         if len(email_subject) > subject_cutoff:
             email_subject = email_subject[:subject_cutoff] + f"... (skipping {len(email_subject) - subject_cutoff} chars)"
 
@@ -36,44 +43,108 @@ class LLMHandler:
 
         system_prompt = (
             'You are a security-focused email classifier. Your goal is to determine whether an email '
-            'is a legitimate request to a human person or spam/malicious content. '
+            'is a legitimate request to a human person or spam/malicious content.\n'
             'Instructions:\n'
-            'Classify the senders intent as either "normal" (legitimate) or "malicious" (spam, phishing, scam, DoS, or abuse).\n\n'
+            'Classify the senders intent as either normal (legitimate) or malicious (spam, phishing, scam, DoS, or abuse). '
+            'Normal emails shall be labelled "pass", malicious emails shall be labelled "block".\n\n'
             'Consider these factors:\n'
-            '- High word count with little meaningful content: "malicious"\n'
-            '- Urgent financial requests or threats: "malicious"\n'
-            '- Excessive links or attachments from unknown senders: "malicious"\n'
-            '- Repeated or bot-like phrasing: "malicious"\n'
-            '- Empty or random content: "malicious"\n'
-            '- Polite, well-structured requests with intelligible content: "normal"\n\n'
-            'Never output explanations, respond with a single token: If you classify the email as "normal" respond with "True", otherwise "False".'
+            '- High word count with little meaningful content: "block"\n'
+            '- Urgent financial requests or threats: "block"\n'
+            '- Excessive links or attachments from unknown senders: "block"\n'
+            '- Repeated or bot-like phrasing: "block"\n'
+            '- Empty or random content: "block"\n'
+            '- Polite, well-structured requests with intelligible content: "pass"\n\n'
+            'Never output explanations, respond with "pass" or "block"\n'
         )
+
+        response_format = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "validation_result",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "classification": {
+                            "type": "string",
+                            "enum": ["pass", "block"],
+                            "description": "Classification of the email legitimacy as either 'pass' or 'block'."
+                        }
+                    },
+                    "required": ["classification"],
+                    "additionalProperties": False
+                }
+            }
+        }
 
         user_prompt = f"""Email from {email_sender}:
         Subject: {email_subject}
         Content: \n\n{email_body}\n"""
 
+        openrouter_json = {
+            "model": model_id,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        }
+        if model_id in models_supporting_structured_output:
+            openrouter_json['response_format'] = response_format
+            expecting_structured_output = True
+        else:
+            expecting_structured_output = False
+
         try:
             response = requests.post(
                 self.openrouter_base_url,
                 headers=self.openrouter_headers,
-                json={
-                    "model": model_id,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                },
+                json=openrouter_json,
                 timeout=self.llm_timeout
             )
 
             if response.status_code == 200:
+                if "choices" not in response.json():
+                    # Handle errors from LLM provider
+                    if 'error' in response.json():
+                        response = response.json()['error']
+                        print(response['message'])
+                        if 'metadata' in response and 'raw' in response['metadata']:
+                            print(response['metadata']['raw'])
+                            return 'error', response['message']
+                        elif response['message'] == 'Rate limit exceeded: free-models-per-min':
+                            return 'error', 'wait a minute'
+                        elif response['message'] == 'Rate limit exceeded: free-models-per-day':
+                            return 'error', 'wait a day'
+                        else:
+                            return 'error', response['message']
+                    else:
+                        print("Unexpected response despite status_code 200.")
+                        for key, value in response.json().items():
+                            print(f'{key}: {value}')
+                    return 'error', ''
+
                 response = response.json()["choices"][0]["message"]["content"].strip()
                 reasoning = ''
 
+                # Structured LLM response
+                if expecting_structured_output:
+                    try:
+                        data = json.loads(response)  # Safely parse JSON
+                        if isinstance(data, dict) and "classification" in data:
+                            classification = data["classification"]
+                            assert isinstance(classification, str), f'classification has unexpected type {type(classification)}'
+                            return classification, ''
+                        else:
+                            print("Invalid response format:", data)
+                            return "error", "LLM sent structured output with invalid format"
+                    except json.JSONDecodeError:
+                        print("Failed to parse JSON from structured output:", response)
+                        return "error", "LLM sent corrupt structured output"
+
                 # Normal LLM response
-                if response.lower() in {"true", "false"}:
-                    return 'pass' if response.lower() == 'true' else 'block', reasoning
+                response = response.strip('"\'.`').lower()
+                if response.lower() in {"pass", "block"}:
+                    return 'pass' if response.lower() == 'pass' else 'block', reasoning
 
                 # Handle output from various models
                 if '</think>' in response:
@@ -83,8 +154,8 @@ class LLMHandler:
                 boxed_match = re.search(r"\\boxed\{(.*?)\}", response)
                 if boxed_match:
                     response = boxed_match.group(1)
-                    if response.lower() in {"true", "false"}:
-                        return 'pass' if response.lower() == 'true' else 'block', reasoning
+                    if response.lower() in {"pass", "block"}:
+                        return 'pass' if response.lower() == 'pass' else 'block', reasoning
                     else:
                         return 'error', reasoning + f'\nResponse: {response}'
 
@@ -96,7 +167,7 @@ class LLMHandler:
                 return 'error', f"Error generating response: {response.status_code} - {response.text}"
 
         except Exception as e:
-            return 'error', f"Error generating response: {str(e)}"
+            return 'error', f"Error generating response: {str(e)} ({type(e)})"  # 'raw'
 
     # TODO: moderation should take subject into account as well
     def moderate_email(self, email_content):
