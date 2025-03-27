@@ -3,15 +3,7 @@ from email_handler import EmailHandler
 import email.utils
 from database import save_email, email_exists
 from llm_handler import LLMHandler
-from bot import Bot
-
-
-def _get_email_body(email_msg):
-    if email_msg.is_multipart():
-        for part in email_msg.walk():
-            if part.get_content_type() == "text/plain":
-                return part.get_payload(decode=True).decode()
-    return email_msg.get_payload(decode=True).decode()
+from bot import Bot, get_email_body
 
 
 def test_bot():
@@ -56,7 +48,7 @@ def test_email_fetching():
         # Extract email information
         sender_name, sender_email = email.utils.parseaddr(email_msg.get("From", ""))
         subject = email_msg.get("Subject", "")
-        body = _get_email_body(email_msg)
+        body = get_email_body(email_msg)
         sent_at = email_msg.get("Date", "")
 
         # Moderate the email content
