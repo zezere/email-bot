@@ -107,6 +107,60 @@ def test_email_fetching():
         )
         print(f"Saved new email: {message_id} from {sender_email}")
 
+def test_validation():
+    """Test validation on normal and malicious emails.
+
+    Tested models:
+    - mistralai/mistral-small-24b-instruct-2501:free
+    - google/gemma-2-9b-it:free  sometimes returns empty response
+    """
+    from bot import is_valid_email_address
+
+    llm_handler = LLMHandler()
+    validation_model = 'mistralai/mistral-small-24b-instruct-2501:free'
+    gt_model = 'deepseek/deepseek-chat-v3-0324:free'
+
+    test_emails = get_test_emails(10)
+    test_labels = [None for _ in test_emails]
+
+    print("\nTesting validation functionality")
+    print("-" * 50)
+    print(f"Validation model: {validation_model}")
+    print(f"Ground truth: {gt_model}")
+
+    for email_msg, label in zip(test_emails, test_labels):
+        message_id = email_msg.get("Message-ID", "")
+
+        # Extract email information
+        from_header = email_msg.get("From", "")
+        sender_name, sender_email = email.utils.parseaddr(from_header)
+        subject = email_msg.get("Subject", "")
+        body = get_email_body(email_msg)
+
+        # Check sender_email address
+        if not is_valid_email_address(sender_email):
+            print(f"SKIPPED invalid email {sender_email}")
+            continue  # not to be handled by LLM validation
+
+        # Get label
+        gt_reasoning = ''
+        if label is None:
+            label, gt_reasoning = llm_handler.validate_email(sender_email, subject, body, model_id=gt_model)
+            if label not in {'pass', 'block'}:
+                print(f"FAILED to get valid ground truth label, got {gt_reasoning}")
+                continue
+
+        # Test
+        response, reasoning = llm_handler.validate_email(sender_email, subject, body, model_id=validation_model)
+        if response == label:
+            print(f"PASSED validation: {response}")
+        else:
+            print(f"FAILED validation: {response} != {label}")
+            print(f"    From: {sender_email}\n    Subject: {subject}\n    Body: {body[:50]}")
+            if reasoning:
+                print(f"    Validation LLM's reasoning:\n{reasoning}")
+            if gt_reasoning:
+                print(f"    Ground-truth LLM's reasoning:\n{gt_reasoning}")
 
 def test_moderation():
     """Test the moderation functionality with various types of content."""
@@ -143,5 +197,6 @@ def test_moderation():
 
 if __name__ == "__main__":
     # test_email_fetching()
+    # test_validation()
     # test_moderation()
     test_bot()
