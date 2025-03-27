@@ -3,6 +3,7 @@ from database import get_user, add_user, save_email, email_exists
 from email_handler import EmailHandler
 from llm_handler import LLMHandler
 import email.utils
+import re
 
 
 class Bot:
@@ -29,6 +30,21 @@ class Bot:
             subject = email_msg.get("Subject", "")
             body = get_email_body(email_msg)
             sent_at = email_msg.get("Date", "")
+
+            # Validate sender_email address
+            if not is_valid_email_address(sender_email):
+                print(f"Received invalid email address: {sender_email[:50]}")
+                continue
+
+            # Quickly validate and block spam
+            response, reasoning = self.llm_handler.validate_email(sender_email, subject, body)
+            if response == "pass":
+                pass
+            elif response == "block":
+                print(f"Blocked email {message_id} from {sender_email} (spam)")
+                continue
+            else:
+                print(f"Validation LLM did not follow instructions and responded:", response, reasoning)
 
             # Moderate the email content
             is_appropriate, moderation_result = self.llm_handler.moderate_email(body)
@@ -73,3 +89,7 @@ def get_email_body(email):
             if part.get_content_type() == "text/plain":
                 return part.get_payload(decode=True).decode()
     return email.get_payload(decode=True).decode()
+
+def is_valid_email_address(email_address):
+    pattern = r'^[a-zA-Z0-9._%+-]+@(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$'
+    return re.match(pattern, email_address) is not None
