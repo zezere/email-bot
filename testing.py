@@ -4,6 +4,40 @@ import email.utils
 from database import save_email, email_exists
 from llm_handler import LLMHandler
 from bot import Bot, get_email_body
+from email.message import EmailMessage
+import random
+import tiktoken
+
+
+def get_test_emails(n=5, to='acp@startup.com'):
+    """Returns a list of fake emails: invalid, spam, and legitimate."""
+    addresses = [
+        'asdlfkj21313@hotmail.c',  # invalid address
+        'john.doe@gmail.com',  # spam
+        'erink@openai.com',  # legit
+    ]
+    subjects = [
+        'alsidlidfsa',
+        '',
+        'ACP for my new project',
+    ]
+    word_counts = [20, 30]
+    # generate random content
+    tokenizer = tiktoken.get_encoding("cl100k_base")
+    vocab_size = tokenizer.n_vocab
+    bodies = [tokenizer.decode([random.randint(0, vocab_size - 1) for _ in range(n)]) for n in word_counts]
+    bodies.append('Hi, my name is Erin. I would like to have an accountability partner to keep me on track with my new project. How does this work?')
+
+    emails = []
+    for _ in range(n):
+        msg = EmailMessage()
+        msg['From'] = random.choice(addresses)
+        msg['To'] = to
+        msg['Message-Id'] = '202503252000.' + str(random.randint(0, 1000000))
+        msg['Subject'] = random.choice(subjects)
+        msg.set_content(random.choice(bodies))
+        emails.append(msg)
+    return emails
 
 
 def test_bot():
@@ -16,6 +50,11 @@ def test_bot():
 
     # Create bot instance
     bot = Bot()
+
+    # If mail server is no configured in .env, test with fake mails
+    if bot.email_handler.email is None:
+        print("Using fake emails for testing.")
+        bot.email_handler.check_inbox = get_test_emails
 
     # Process new emails
     print("Starting email processing...")
