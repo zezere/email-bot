@@ -27,7 +27,7 @@ class Bot:
             from_header = email_msg.get("From", "")
             sender_name, sender_email = email.utils.parseaddr(from_header)
             subject = email_msg.get("Subject", "")
-            body = self._get_email_body(email_msg)
+            body = get_email_body(email_msg)
             sent_at = email_msg.get("Date", "")
 
             # Moderate the email content
@@ -56,13 +56,6 @@ class Bot:
             print(f"Generated response for {message_id}: {response}")
             self._handle_new_user(sender_email, subject, response)
 
-    def _get_email_body(self, email):
-        if email.is_multipart():
-            for part in email.walk():
-                if part.get_content_type() == "text/plain":
-                    return part.get_payload(decode=True).decode()
-        return email.get_payload(decode=True).decode()
-
     def _handle_new_user(self, email_address, subject, response):
         # add_user(email_address, goal)
         self.email_handler.send_email(email_address, f"Re: {subject}", response)
@@ -73,3 +66,10 @@ class Bot:
         #     self.email_handler.send_email(
         #         email, "Progress Update Received", "Thanks for your update! Keep going!"
         #     )
+
+def get_email_body(email):
+    if email.is_multipart():
+        for part in email.walk():
+            if part.get_content_type() == "text/plain":
+                return part.get_payload(decode=True).decode()
+    return email.get_payload(decode=True).decode()
