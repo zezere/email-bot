@@ -2,18 +2,27 @@
 
 A simple email-based accountability partner bot that helps users achieve their goals through regular email communication.
 
+## Features
+- Processes incoming emails automatically
+- Moderates content using LLM
+- Stores communication history in SQLite database
+- Runs on a schedule using cron
+- Logs all operations for monitoring
+
 ## Setup
 
 1. Install dependencies: `pip install -r requirements.txt`
 2. Create `.env` file with your email credentials
 3. Set up cron job to run `main.py` regularly
 
-## Structure
+## Project Structure
 
 - `main.py` - Entry point
-- `email_handler.py` - Email operations
+- `bot.py` - Core bot logic for processing emails
+- `email_handler.py` - Email operations (SMTP/IMAP)
 - `database.py` - SQLite database operations
-- `bot.py` - Core bot logic 
+- `llm_handler.py` - LLM integration for content moderation
+- `data/` - Contains SQLite database
 
 ## Development Setup
 

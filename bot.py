@@ -1,29 +1,40 @@
 from datetime import datetime
 from database import get_user, add_user, save_email, email_exists
 from email_handler import EmailHandler
+from llm_handler import LLMHandler
 import email.utils
 
 
 class Bot:
     def __init__(self):
         self.email_handler = EmailHandler()
+        self.llm_handler = LLMHandler()
 
     def process_new_emails(self):
+        """Process new emails: check for harmful content and save to database."""
         emails = self.email_handler.check_inbox()
-        for email in emails:
-            message_id = email.get("Message-ID", "")
+        print(f"Found {len(emails)} emails in inbox")
+
+        for email_msg in emails:
+            message_id = email_msg.get("Message-ID", "")
 
             # Skip if email already exists in database
             if email_exists(message_id):
+                print(f"Skipping existing email: {message_id}")
                 continue
 
             # Extract email information
-            sender_name, sender_email = email.utils.parseaddr(email.get("From", ""))
-            subject = email.get("Subject", "")
-            body = self._get_email_body(email)
-            sent_at = email.get("Date", "")
+            from_header = email_msg.get("From", "")
+            sender_name, sender_email = email.utils.parseaddr(from_header)
+            subject = email_msg.get("Subject", "")
+            body = self._get_email_body(email_msg)
+            sent_at = email_msg.get("Date", "")
 
-            # Save email information to database
+            # Moderate the email content
+            is_appropriate, moderation_result = self.llm_handler.moderate_email(body)
+            print(f"Moderation result for {message_id}: {moderation_result}")
+
+            # Save email information to database with moderation results
             save_email(
                 message_id=message_id,
                 sender_name=sender_name,
@@ -31,12 +42,19 @@ class Bot:
                 subject=subject,
                 body=body,
                 sent_at=sent_at,
+                is_appropriate=is_appropriate,
+                moderation_reason=moderation_result,
             )
+            print(f"Saved new email: {message_id} from {sender_email}")
 
-            if subject.lower() == "start":
-                self._handle_new_user(sender_email, body)
-            else:
-                self._handle_user_update(sender_email, body)
+            # Handle the email based on its content and moderation result
+            if not is_appropriate:
+                continue
+
+            # Generate intelligent response for appropriate emails
+            response = self.llm_handler.generate_response(body, subject, sender_name)
+            print(f"Generated response for {message_id}: {response}")
+            self._handle_new_user(sender_email, subject, response)
 
     def _get_email_body(self, email):
         if email.is_multipart():
@@ -45,17 +63,13 @@ class Bot:
                     return part.get_payload(decode=True).decode()
         return email.get_payload(decode=True).decode()
 
-    def _handle_new_user(self, email, goal):
-        add_user(email, goal)
-        self.email_handler.send_email(
-            email,
-            "Welcome to Accountability Bot!",
-            f"Great! I'll help you achieve your goal: {goal}",
-        )
+    def _handle_new_user(self, email_address, subject, response):
+        # add_user(email_address, goal)
+        self.email_handler.send_email(email_address, f"Re: {subject}", response)
 
     def _handle_user_update(self, email, update):
         user = get_user(email)
-        if user:
-            self.email_handler.send_email(
-                email, "Progress Update Received", "Thanks for your update! Keep going!"
-            )
+        # if user:
+        #     self.email_handler.send_email(
+        #         email, "Progress Update Received", "Thanks for your update! Keep going!"
+        #     )
