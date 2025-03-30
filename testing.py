@@ -1,12 +1,15 @@
+from datetime import datetime, timedelta
 from database import init_db
 from email_handler import EmailHandler
 import email.utils
 from database import save_email, email_exists
 from llm_handler import LLMHandler
 from bot import Bot, get_email_body
+from utils import get_message_sent_time, binary_cross_entropy
 from email.message import EmailMessage
 import random
 import tiktoken
+import numpy as np
 
 
 def get_test_emails(n=5, to='acp@startup.com'):
@@ -26,7 +29,8 @@ def get_test_emails(n=5, to='acp@startup.com'):
     tokenizer = tiktoken.get_encoding("cl100k_base")
     vocab_size = tokenizer.n_vocab
     bodies = [tokenizer.decode([random.randint(0, vocab_size - 1) for _ in range(n)]) for n in word_counts]
-    bodies.append('Hi, my name is Erin. I would like to have an accountability partner to keep me on track with my new project. How does this work?')
+    bodies.append('Hi, my name is Erin. I would like to have an accountability partner '
+                  'to keep me on track with my new project. How does this work?')
 
     emails = []
     for _ in range(n):
@@ -36,6 +40,54 @@ def get_test_emails(n=5, to='acp@startup.com'):
         msg['Message-Id'] = '202503252000.' + str(random.randint(0, 1000000))
         msg['Subject'] = random.choice(subjects)
         msg.set_content(random.choice(bodies))
+        emails.append(msg)
+    return emails
+
+
+def grab_test_conversation(topic: str):
+    # DANGER: requires "data/test_conversations.py", which is not part of the repo
+    # This module has conversations: {topic: [str]}
+    # Each str is a message (body of an email)
+    # User messages and bot messages strictly alternate
+    from data.test_conversations import conversations
+
+    print(f'Loaded conversation "{topic}" with {len(conversations[topic])} messages.')
+    return topic, conversations[topic]
+
+
+def convert_messages_to_emails(topic, messages=None, user_address='john.doe@gmail.com',
+                               bot_address='acp@startup.com', response_time=None):
+    """Returns a list of emails from a ACP conversation on `topic`.
+
+    response_time (int): delay between messages in minutes
+    response_time (list): list of datetime objects for Date"""
+    if messages is None:
+        # get them from data.conversations
+        topic, messages = grab_test_conversation(topic)
+
+    user = dict(role='user', address=user_address)
+    bot = dict(role='assistant', address=bot_address)
+    emails = []
+
+    # Messages alternate between user and bot, user starts
+    for i, message in enumerate(messages):
+        if i % 2 == 0:
+            sender, recipient = user, bot
+        else:
+            sender, recipient = bot, user
+
+        msg = EmailMessage()
+        msg['From'] = sender['address']
+        msg['To'] = recipient['address']
+        msg['Message-Id'] = '202503252000.' + str(random.randint(0, 1000000))
+        if isinstance(response_time, int):
+            num_messages_that_follow = len(messages) - i
+            dt = datetime.now() - timedelta(minutes=response_time * num_messages_that_follow)
+            msg['Date'] = dt.isoformat()
+        elif isinstance(response_time, list) and len(response_time) > i:
+            msg['Date'] = response_time[i].isoformat()
+        msg['Subject'] = topic
+        msg.set_content(message)
         emails.append(msg)
     return emails
 
@@ -107,6 +159,7 @@ def test_email_fetching():
         )
         print(f"Saved new email: {message_id} from {sender_email}")
 
+
 def test_validation():
     """Test validation on normal and malicious emails.
 
@@ -120,8 +173,8 @@ def test_validation():
     llm_handler = LLMHandler()
     validation_model = 'mistralai/mistral-small-24b-instruct-2501:free'
     #gt_model = 'deepseek/deepseek-chat-v3-0324:free'  # no structured output
-    #gt_model = 'google/gemini-2.5-pro-exp-03-25:free'  # structured output, but RESOURCE_EXHAUSTED
-    gt_model = 'google/gemini-2.0-flash-lite-preview-02-05:free'  # structured output
+    gt_model = 'google/gemini-2.5-pro-exp-03-25:free'  # structured output, but RESOURCE_EXHAUSTED
+    #gt_model = 'google/gemini-2.0-flash-lite-preview-02-05:free'  # structured output
 
     test_emails = get_test_emails(100)
     test_labels = [None for _ in test_emails]
@@ -134,8 +187,6 @@ def test_validation():
     times = {'gt': [], 'valid': []}  # measure agent's total response time
 
     for email_msg, label in zip(test_emails, test_labels):
-        message_id = email_msg.get("Message-ID", "")
-
         # Extract email information
         from_header = email_msg.get("From", "")
         sender_name, sender_email = email.utils.parseaddr(from_header)
@@ -192,6 +243,79 @@ def test_validation():
         print(f"    Ground truth model: {avg_time:.1f} sec")
 
 
+def test_scheduler(emails=None, bot_address='acp@startup.com'):
+    """Test scheduler agent on a conversation.
+
+    The scheduler agent must decide whether a reponse is due given "current"
+    date/time and a list of past emails from a conversation. Labels are
+    generated from conversation time stamps.
+    """
+    llm_handler = LLMHandler()
+    scheduler_model = 'mistralai/mistral-small-24b-instruct-2501:free'  # OK
+    #scheduler_model = 'deepseek/deepseek-chat-v3-0324:free'  # no structured output
+    #scheduler_model = 'google/gemini-2.5-pro-exp-03-25:free'  # structured output, but RESOURCE_EXHAUSTED
+    #scheduler_model = 'google/gemini-2.0-flash-exp:free'  # OK but due/probability inconsistent
+    #scheduler_model = 'meta-llama/llama-3.1-8b-instruct'  # worse
+    #scheduler_model = 'mistralai/mistral-small-3.1-24b-instruct'  # worse
+    #scheduler_model = 'openai/gpt-4o-mini'  # acc better, probas worse
+
+    topic = 'Financial Discipline'
+    test_emails = emails or convert_messages_to_emails(topic, response_time=5)
+
+    print('\nTesting scheduler agents')
+    print("-" * 50)
+    print(f'Scheduler model:   {scheduler_model}')
+    print(f'Conversation:      {topic} ({len(test_emails)} messages)')
+
+    # TODO: test case for delayed/scheduled response:
+    # if time delta is > 1.5 hours, "wait" 1...N days until past next email date
+    #     if "current" time is before -> label = False, past: label = True
+
+    losses, accuracies = [], []
+    for i, current_msg in enumerate(test_emails):
+        # Conversation to this end
+        message_history = test_emails[:i + 1]
+
+        current_time = get_message_sent_time(current_msg, debug=True) + timedelta(minutes=5)
+        next_message = test_emails[i + 1] if i + 1 < len(test_emails) else None
+
+        # Define test cases
+        if next_message is None:
+            label = (False, 0.0)
+        elif next_message.get("From", "Unknown") == bot_address:
+            # Use the sent time of the next bot message as due_time
+            due_time = get_message_sent_time(next_message)
+            delta = (due_time - current_time).total_seconds() / 60  # min to go
+            label = (True, 1.0) if delta < 90 else (False, 0.0)
+        elif current_msg.get("From", "Unknown") == bot_address:
+            continue  # skip, this works.
+            label = (False, 0.0)  # no soliloquy!
+        else:
+            continue
+
+        prediction = llm_handler.schedule_response(message_history,
+                                                   model_id=scheduler_model,
+                                                   bot_address=bot_address,
+                                                   now=current_time)
+
+        if 'error' in prediction:
+            print(f'ERROR: {prediction["error"]}')
+            break
+
+        response_is_due = prediction['response_is_due']
+        probability = prediction['probability']
+
+        losses.append(binary_cross_entropy(label[1], probability))
+        if response_is_due == label[0]:
+            print(f"PASSED: correct   prediction for message {i}: {prediction}")
+            accuracies.append(1)
+        else:
+            print(f"FAILED: incorrect prediction for message {i}: {prediction}, GT: {label}")
+            accuracies.append(0)
+    print(f"Accuracy of response_is_due:       {np.mean(accuracies):.2f}")
+    print(f"Loss from predicted probabilities: {np.mean(losses):.2f}")
+
+
 def test_moderation():
     """Test the moderation functionality with various types of content."""
     llm_handler = LLMHandler()
@@ -229,4 +353,5 @@ if __name__ == "__main__":
     # test_email_fetching()
     # test_validation()
     # test_moderation()
-    test_bot()
+    test_scheduler()
+    # test_bot()

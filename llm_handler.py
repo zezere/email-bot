@@ -2,10 +2,25 @@ import os
 import re
 import json
 import requests
+from datetime import datetime
 from dotenv import load_dotenv
 from openai import OpenAI
+import email
+import numpy as np
+from utils import get_email_body, get_message_sent_time, count_words
 
 load_dotenv()
+
+
+models_supporting_structured_output = {
+    'google/gemini-2.5-pro-exp-03-25:free',
+    'google/gemini-2.0-flash-lite-preview-02-05:free',
+    'google/gemma-3-27b-it:free',
+    'google/gemini-2.0-flash-exp:free',
+    'meta-llama/llama-3.1-8b-instruct',  # $/M tokens in/out: 0.1/0.1
+    'mistralai/mistral-small-3.1-24b-instruct',  # $/M tokens in/out: 0.1/0.3
+    'openai/gpt-4o-mini',  # $/M tokens in/out: 0.15/0.6
+}
 
 
 class LLMHandler:
@@ -28,12 +43,6 @@ class LLMHandler:
         Returns True if email appears valid.
         """
         model_id = model_id or self.model_id
-        models_supporting_structured_output = {
-            'google/gemini-2.5-pro-exp-03-25:free',
-            'google/gemini-2.0-flash-lite-preview-02-05:free',
-            'google/gemma-3-27b-it:free',
-            'google/gemini-2.0-flash-exp:free',
-        }
         if len(email_subject) > subject_cutoff:
             email_subject = email_subject[:subject_cutoff] + f"... (skipping {len(email_subject) - subject_cutoff} chars)"
 
@@ -169,6 +178,185 @@ class LLMHandler:
         except Exception as e:
             return 'error', f"Error generating response: {str(e)} ({type(e)})"  # 'raw'
 
+    def schedule_response(self, emails, model_id=None, bot_address='acp@startup.com', now=None, verbose=False):
+        """Decide whether a reponse is due.
+
+        This agent gets the "From", "Date" and "body" attributes of each
+        email in `emails` and the current date/time.
+
+        It returns two values in json format:
+        - response_is_due (bool): whether it would be appropriate to repond to the last
+                                  user email right now.
+        - probability (float):    likelihood that the user expects a response or reminder
+                                  from the assistant right now.
+        """
+        model_id = model_id or self.model_id
+
+        system_prompt = """You are an AI assistant that helps determine when to respond to email conversations.
+
+            Analyze the email history and determine if a response is due based on:
+            1. Time elapsed since the last email
+            2. Whether the last email was from the user or the assistant
+            3. Whether the last email contains a user question or request that needs a response
+            4. Whether user and assistant have agreed on a schedule when to check in again
+            5. If the user wanted to report back by now, a reponse is due
+
+            Return your decision in JSON format with these fields:
+            - response_is_due (boolean): true if a response should be sent now, false otherwise
+            - probability (float): between 0.0 and 1.0, representing the likelihood that a response is expected
+
+            Only return valid JSON with these two fields and no additional text.
+            """.lstrip()
+
+        # Deterministic checks
+        if len(emails) == 0:
+            print("EMPTY list of emails!")
+            return
+        if emails[-1].get("From", "Unknown") == bot_address:
+            # Don't respond to self
+            return dict(response_is_due=False, probability=0.0)
+        if (len(emails) == 1) and (emails[0].get("From", "Unknown") != bot_address):
+            # Always respond to first user mail
+            return dict(response_is_due=True, probability=1.0)
+
+        # Format the email history for the prompt
+        email_history = []
+        for msg in emails:
+            # Format datetime in RFC 2822 format, like in email headers (skip seconds and TZ)
+            dt = get_message_sent_time(msg)
+            formatted_date = email.utils.format_datetime(dt)[:-9] if dt else "Unknown"
+
+            email_history.append({
+                # "From": msg.get("From", "Unknown"),  # probably slightly worse
+                "From": "assistant" if (msg.get("From", "Unknown") == bot_address) else "user",
+                "Date": formatted_date,
+                "Body": get_email_body(msg)
+            })
+
+        # Create the user prompt with the email history
+        # TODO: Verify: LLM understands JSON better than human-readable emails
+        # To preserve emojis, set ensure_ascii=False
+        now = now or datetime.now()
+        user_prompt = (
+            "Here is the email conversation history:\n"
+            f"{json.dumps(email_history, indent=2, ensure_ascii=False)}\n"
+            f"\nCurrent time: {email.utils.format_datetime(now)[:-9]}\n\n"
+            "Based on this information, determine if a response is due now."
+            )
+
+        response_format = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "scheduling_decision",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "response_is_due": {
+                            "type": "boolean",
+                            "description": ("Whether it's appropriate to respond to the last "
+                                            "user email right now")
+                        },
+                        "probability": {
+                            "type": "number",
+                            "description": ("Likelihood between 0 and 1 that the user expects "
+                                            "a response or reminder from the assistant by now")
+                        }
+                    },
+                    "required": ["response_is_due", "probability"],
+                    "additionalProperties": False
+                }
+            }
+        }
+
+        openrouter_json = {
+            "model": model_id,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": 0.1,  # Lower temperature for more deterministic responses
+        }
+
+        if model_id in models_supporting_structured_output:
+            openrouter_json['response_format'] = response_format
+
+        if verbose:
+            print(f"System Prompt:\n{system_prompt}")
+            print(f"User Prompt:\n{user_prompt}")
+            # return {'response_is_due': False, 'probability': 0.5}  # DEBUG
+
+        try:
+            response = requests.post(
+                self.openrouter_base_url,
+                headers=self.openrouter_headers,
+                json=openrouter_json,
+                timeout=self.llm_timeout
+            )
+
+            if response.status_code == 200:
+                if "choices" not in response.json():
+                    # Handle errors from LLM provider
+                    if 'error' in response.json():
+                        error = response.json()['error']
+                        print(error['message'])
+                        if 'metadata' in error and 'raw' in error['metadata']:
+                            print(error['metadata']['raw'])
+                    else:
+                        print(response.json())
+                    return {
+                        "response_is_due": False,
+                        "probability": 0.0,
+                        "error": f"Error: {response.status_code} - {response.text}"
+                    }
+                content = response.json()["choices"][0]["message"]["content"].strip()
+
+                # Parse the JSON response
+                try:
+                    result = json.loads(content)
+                    # Validate the response has the required fields
+                    if "response_is_due" in result and "probability" in result:
+                        result["probability"] = np.clip(result["probability"], .05, .95).item()
+                        return result
+                    else:
+                        return {
+                            "response_is_due": False,
+                            "probability": 0.0,
+                            "error": "Invalid response format from LLM"
+                        }
+                except json.JSONDecodeError:
+                    # If the response isn't valid JSON, try to extract it using regex
+                    response_pattern = r'"response_is_due"\s*:\s*(true|false)'
+                    probability_pattern = r'"probability"\s*:\s*([0-9]*\.?[0-9]+)'
+
+                    response_match = re.search(response_pattern, content, re.IGNORECASE)
+                    probability_match = re.search(probability_pattern, content)
+
+                    if response_match and probability_match:
+                        return {
+                            "response_is_due": response_match.group(1).lower() == "true",
+                            "probability": float(probability_match.group(1)),
+                        }
+                    else:
+                        return {
+                            "response_is_due": False,
+                            "probability": 0.0,
+                            "error": "Failed to parse LLM response"
+                        }
+            else:
+                return {
+                    "response_is_due": False,
+                    "probability": 0.0,
+                    "error": f"Error: {response.status_code} - {response.text}"
+                }
+
+        except Exception as e:
+            return {
+                "response_is_due": False,
+                "probability": 0.0,
+                "error": f"Error: {str(e)}"
+            }
+
     # TODO: moderation should take subject into account as well
     def moderate_email(self, email_content):
         """Check if email content is appropriate using OpenAI's moderation API."""
@@ -263,8 +451,3 @@ class LLMHandler:
 
         except Exception as e:
             return f"Error generating response: {str(e)}"
-
-def count_words(text):
-    """Count words safely."""
-    words = re.findall(r'\b\w+\b', text)  # Extract words safely
-    return len(words)
