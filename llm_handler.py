@@ -363,6 +363,279 @@ class LLMHandler:
                 "error": f"Error: {str(e)}"
             }
 
+    def schedule_response_v2(self, emails, model_id=None, bot_address='acp@startup.com', now=None,
+                             verbose=False, DEBUG=False):
+        """Decide whether a reponse is due.
+
+        This agent gets the "From", "Date" and "body" attributes of each
+        email in `emails` and the current date/time.
+
+        It returns two values in json format:
+        - response_is_due (bool): whether it would be appropriate to repond to the last
+                                  user email right now.
+        - probability (float):    likelihood that the user expects a response or reminder
+                                  from the assistant right now.
+        """
+        model_id = model_id or self.model_id
+
+        system_prompt = """
+            You support an AI assistant that plays the role of an accountability partner for a human user.
+            Your task is to help the assistant with sending responses to the user timely and schedule
+            reminder messages when the user has commited to check-in with the assistant but is overdue.
+
+            Analyze the conversation regarding scheduling and commitments and predict:
+            1. Who might send the next message, user or assistant?
+            2. When might the next message be sent? Predict the next message's date and time!
+
+            Also analyze the last user message carefully: If the user expresses any doubt,
+            asks a question, or simply needs more advice or encouragement,
+            the assistent might respond again to address those concerns.
+
+            Only if the user gives the impression that he/she wants to end the conversation for now,
+            assume a scheduled response by the assistant or user.
+
+            Return your predictions in JSON format with these fields:
+            - assistant_is_next (boolean): true if the assistant might send the next message, false otherwise
+            - date (str): date and time of next expected message in email (RFC 2822) format
+
+            Only return valid JSON with these two fields and no additional text.
+
+            Example 1.
+            Input:
+            From: user
+            Date: Mon, 31 Mar 2025 14:35
+            Content: OK, I'm really pumped now, I will see how the first week will go, will report you next Friday.
+            ---
+            From: assistant
+            Date: Mon, 31 Mar 2025 14:40
+            Content: Looking forward to the update!
+
+            Output:
+            {'assistant_is_next': false, 'date': 'Fri, 04 Apr 2025 14:35'}
+
+            Example 2.
+            Input:
+            From: user
+            Date: Sun, 30 Mar 2025 16:30
+            Content: I have to go now, Sunday evening works great for me. Talk to you in a two weeks!
+
+            Output:
+            {'assistant_is_next': false, 'date': 'Sun, 13 Apr 2025 19:00'}
+
+            Example 3.
+            Input:
+            From: user
+            Date: Wed, 02 Apr 2025 11:30
+            Content: Sounds perfect, I'll let you know how on Wednesday how the session went! Any final advice?
+
+            Output:
+            {'assistant_is_next': true, 'date': 'Wed, 02 Apr 2025 11:33'}
+
+            Example 4.
+            Input:
+            From: user
+            Date: Sat, 05 Apr 2024 16:00
+            Content: Twice a week sounds a lot. Let's see what I can do.
+
+            Output:
+            {'assistant_is_next': true, 'date': 'Sat, 05 Apr 2024 16:03'}
+            """
+        system_prompt = textwrap.dedent(system_prompt)
+
+        # Deterministic checks
+        if len(emails) == 0:
+            print("EMPTY list of emails!")
+            return
+        if emails[-1].get("From", "Unknown") == bot_address:
+            # Don't respond to self
+            return dict(response_is_due=False, probability=0.0)
+        if (len(emails) == 1) and (emails[0].get("From", "Unknown") != bot_address):
+            # Always respond to first user mail
+            return dict(response_is_due=True, probability=1.0)
+
+        # Create the user prompt with all email messages in human-readable format
+        email_history = ['Input:']
+        for msg in emails:
+            # Format datetime in RFC 2822 format, like in email headers (skip seconds and TZ)
+            dt = get_message_sent_time(msg)
+            formatted_date = email.utils.format_datetime(dt)[:-9] if dt else "Unknown"
+            sender = "assistant" if (msg.get("From", "Unknown") == bot_address) else "user"
+            email_history.append(
+                f'From: {sender}\n'
+                f'Date: {formatted_date}\n'
+                f'Content: {get_email_body(msg)}---'
+            )
+        user_prompt = '\n'.join(email_history)
+
+        response_format = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "next_message",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "assistant_is_next": {
+                            "type": "boolean",
+                            "description": "Whether the next message might be send by the agent"
+                        },
+                        "date": {
+                            "type": "string",
+                            "description": "Expected date and time of next message in email (RFC 2822) format"
+                        }
+                    },
+                    "required": ["assistant_is_next", "date"],
+                    "additionalProperties": False
+                }
+            }
+        }
+
+        openrouter_json = {
+            "model": model_id,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": 0.1,  # Lower temperature for more deterministic responses
+        }
+
+        if model_id in models_supporting_structured_output:
+            openrouter_json['response_format'] = response_format
+
+        if verbose:
+            print(f"System Prompt:\n{system_prompt}")
+            print(f"User Prompt:\n{user_prompt}")
+
+        if DEBUG:
+            return {'response_is_due': False, 'probability': 0.5}  # Skip LLM call
+
+        try:
+            response = requests.post(
+                self.openrouter_base_url,
+                headers=self.openrouter_headers,
+                json=openrouter_json,
+                timeout=self.llm_timeout
+            )
+
+            if response.status_code == 200:
+                if "choices" not in response.json():
+                    # Handle errors from LLM provider
+                    if 'error' in response.json():
+                        error = response.json()['error']
+                        print(error['message'])
+                        if 'metadata' in error and 'raw' in error['metadata']:
+                            print(error['metadata']['raw'])
+                    else:
+                        print(response.json())
+                    return {
+                        "response_is_due": False,
+                        "probability": 0.0,
+                        "error": f"Error: {response.status_code} - {response.text}"
+                    }
+                content = response.json()["choices"][0]["message"]["content"].strip()
+
+                # Parse the JSON response
+                try:
+                    result = json.loads(content)
+                    # Validate the response has the required fields
+                    if "assistant_is_next" in result and "date" in result:
+                        return self._validate_output(result, now)
+                    else:
+                        return {
+                            "response_is_due": False,
+                            "probability": 0.0,
+                            "error": "Invalid response format from LLM"
+                        }
+                except json.JSONDecodeError:
+                    # If the response isn't valid JSON, try to extract it using regex
+                    assistant_is_next_pattern = r'"assistant_is_next"\s*:\s*(true|false)'
+                    date_pattern = r'"date"\s*:\s*"([^"]+)"'
+
+                    assistant_match = re.search(assistant_is_next_pattern, content, re.IGNORECASE)
+                    date_match = re.search(date_pattern, content)
+
+                    if assistant_match and date_match:
+                        result = {
+                            "assistant_is_next": assistant_match.group(1).lower() == "true",
+                            "date": date_match.group(1),
+                        }
+                        return self._validate_output(result, now)
+                    else:
+                        return {
+                            "response_is_due": False,
+                            "probability": 0.0,
+                            "error": "Failed to parse LLM response"
+                        }
+            else:
+                return {
+                    "response_is_due": False,
+                    "probability": 0.0,
+                    "error": f"Error: {response.status_code} - {response.text}"
+                }
+
+        except Exception as e:
+            return {
+                "response_is_due": False,
+                "probability": 0.0,
+                "error": f"Error: {str(e)}"
+            }
+
+    def _validate_output(self, result, now=None):
+        """
+        Validates the output from the LLM and converts it to the expected format.
+
+        Args:
+            result (dict): The parsed JSON result from the LLM with 'assistant_is_next' and 'date' fields
+            now (datetime, optional): Current datetime. Defaults to datetime.now().
+
+        Returns:
+            dict: Dictionary with 'response_is_due', 'probability', and optional 'error' fields
+        """
+        now = now or datetime.now()
+
+        # Default response if we can't parse the date
+        default_response = {
+            "response_is_due": True,
+            "probability": 1.0,
+            "error": "Invalid date format"
+        }
+
+        try:
+            # Parse the predicted date
+            predicted_date_str = result.get("date", "")
+
+            # Try to parse the RFC 2822 format date
+            try:
+                # email.utils.parsedate_to_datetime can parse RFC 2822 format
+                predicted_date = email.utils.parsedate_to_datetime(predicted_date_str)
+            except (ValueError, TypeError):
+                # If that fails, try a more flexible approach
+                try:
+                    from dateutil import parser
+                    predicted_date = parser.parse(predicted_date_str)
+                except (ValueError, ImportError):
+                    return default_response
+
+            # DEBUG output
+            print(f"\n                       predicted DATE: {predicted_date}   SENDER: {'assistant' if result['assistant_is_next'] else 'user'}")
+
+            # Calculate time till scheduled response in minutes
+            min_ahead = (predicted_date - now).total_seconds() / 60
+
+            # If assistant is next, respond now or when scheduled, otherwise wait 90 min
+            patience = 0 if result.get("assistant_is_next", True) else 90
+            if min_ahead + patience <= 0:
+                return {"response_is_due": True, "probability": 1.0}
+            else:
+                return {"response_is_due": False, "probability": 0.0}
+
+        except Exception as e:
+            return {
+                "response_is_due": False,
+                "probability": 0.0,
+                "error": f"Error validating output: {str(e)}"
+            }
+
     # TODO: moderation should take subject into account as well
     def moderate_email(self, email_content):
         """Check if email content is appropriate using OpenAI's moderation API."""

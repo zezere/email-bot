@@ -268,8 +268,9 @@ def test_scheduler(emails=None, bot_address='acp@startup.com'):
     verbose = False  # print prompts
     DEBUG = False  # skip LLM calls
 
-    #topic = 'Startup Entrepreneurship'
-    topic = 'Financial Discipline'
+    # topic = 'Weight Loss Journey'
+    # topic = 'Financial Discipline'
+    topic = 'Startup Entrepreneurship'
     test_emails = emails or convert_messages_to_emails(topic)
 
     print('\nTesting scheduler agents')
@@ -279,7 +280,7 @@ def test_scheduler(emails=None, bot_address='acp@startup.com'):
 
     def _validate(llm_handler, message_history, label, model_id, bot_address, current_time,
                   verbose, DEBUG):
-        prediction = llm_handler.schedule_response(message_history,
+        prediction = llm_handler.schedule_response_v2(message_history,
                                                    model_id=model_id,
                                                    bot_address=bot_address,
                                                    now=current_time,
@@ -300,6 +301,7 @@ def test_scheduler(emails=None, bot_address='acp@startup.com'):
         else:
             print(f"FAILED: incorrect prediction for msg {i} {current_time}: {prediction}, GT: {label}")
             acc = 0
+            exit()
 
         return acc, loss, error
 
@@ -337,7 +339,7 @@ def test_scheduler(emails=None, bot_address='acp@startup.com'):
                     losses.append(loss)
                     dt += timedelta(days=1)
 
-                dt = due_time + timedelta(minutes=30)
+                dt = due_time + timedelta(minutes=90)
                 label = (True, 1.0)
                 acc, loss, error = _validate(llm_handler, message_history, label, scheduler_model,
                                              bot_address, dt, verbose, DEBUG)
