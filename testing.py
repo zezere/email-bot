@@ -51,7 +51,7 @@ def grab_test_conversation(topic: str):
     # User messages and bot messages strictly alternate
     from data.test_conversations import conversations
 
-    print(f'Loaded conversation "{topic}" with {len(conversations[topic])} messages.')
+    print(f'Loaded conversation "{topic}" with {len(conversations[topic]['messages'])} messages.')
     return topic, conversations[topic]
 
 
@@ -63,7 +63,10 @@ def convert_messages_to_emails(topic, messages=None, user_address='john.doe@gmai
     response_time (list): list of datetime objects for Date"""
     if messages is None:
         # get them from data.conversations
-        topic, messages = grab_test_conversation(topic)
+        topic, conversation = grab_test_conversation(topic)
+        messages = conversation["messages"]
+        if "dates" in conversation:
+            response_time = conversation["dates"]
 
     user = dict(role='user', address=user_address)
     bot = dict(role='assistant', address=bot_address)
@@ -202,7 +205,8 @@ def test_validation():
         gt_reasoning = ''
         if label is None:
             t0 = perf_counter()
-            label, gt_reasoning = llm_handler.validate_email(sender_email, subject, body, model_id=gt_model)
+            label, gt_reasoning = llm_handler.validate_email(sender_email, subject,
+                                                             body, model_id=gt_model)
             times['gt'].append(perf_counter() - t0)
 
             # Handle rate limits
@@ -210,7 +214,8 @@ def test_validation():
                 print("waiting to pass rate-limit for free models...")
                 sleep(60)
                 t0 = perf_counter()
-                label, gt_reasoning = llm_handler.validate_email(sender_email, subject, body, model_id=gt_model)
+                label, gt_reasoning = llm_handler.validate_email(sender_email, subject,
+                                                                 body, model_id=gt_model)
                 times['gt'].append(perf_counter() - t0)
             elif gt_reasoning == 'wait a day':
                 print("daily rate limit for free models reached, quitting.")
@@ -222,7 +227,8 @@ def test_validation():
 
         # Test
         t0 = perf_counter()
-        response, reasoning = llm_handler.validate_email(sender_email, subject, body, model_id=validation_model)
+        response, reasoning = llm_handler.validate_email(sender_email, subject,
+                                                         body, model_id=validation_model)
         times['valid'].append(perf_counter() - t0)
         if response == label:
             print(f"PASSED validation: {response}")
@@ -259,59 +265,100 @@ def test_scheduler(emails=None, bot_address='acp@startup.com'):
     #scheduler_model = 'mistralai/mistral-small-3.1-24b-instruct'  # worse
     #scheduler_model = 'openai/gpt-4o-mini'  # acc better, probas worse
 
+    verbose = False  # print prompts
+    DEBUG = False  # skip LLM calls
+
+    #topic = 'Startup Entrepreneurship'
     topic = 'Financial Discipline'
-    test_emails = emails or convert_messages_to_emails(topic, response_time=5)
+    test_emails = emails or convert_messages_to_emails(topic)
 
     print('\nTesting scheduler agents')
     print("-" * 50)
     print(f'Scheduler model:   {scheduler_model}')
     print(f'Conversation:      {topic} ({len(test_emails)} messages)')
 
-    # TODO: test case for delayed/scheduled response:
-    # if time delta is > 1.5 hours, "wait" 1...N days until past next email date
-    #     if "current" time is before -> label = False, past: label = True
+    def _validate(llm_handler, message_history, label, model_id, bot_address, current_time,
+                  verbose, DEBUG):
+        prediction = llm_handler.schedule_response(message_history,
+                                                   model_id=model_id,
+                                                   bot_address=bot_address,
+                                                   now=current_time,
+                                                   verbose=verbose,
+                                                   DEBUG=DEBUG)
+
+        response_is_due = prediction['response_is_due']
+        probability = prediction['probability']
+        error = prediction.get('error', None)
+        if error:
+            print(f'ERROR: {error}')
+            return None, None, error
+
+        loss = binary_cross_entropy(label[1], probability)
+        if response_is_due == label[0]:
+            print(f"PASSED: correct   prediction for msg {i} {current_time}: {prediction}")
+            acc = 1
+        else:
+            print(f"FAILED: incorrect prediction for msg {i} {current_time}: {prediction}, GT: {label}")
+            acc = 0
+
+        return acc, loss, error
 
     losses, accuracies = [], []
     for i, current_msg in enumerate(test_emails):
         # Conversation to this end
         message_history = test_emails[:i + 1]
 
+        # Set current time to 5 min after current_message's sent time
         current_time = get_message_sent_time(current_msg, debug=True) + timedelta(minutes=5)
         next_message = test_emails[i + 1] if i + 1 < len(test_emails) else None
 
         # Define test cases
         if next_message is None:
-            label = (False, 0.0)
+            if current_msg.get("From", "Unknown") == bot_address:
+                break  # skip final bot message, is trivial
+            label = (False, 0.0)  # assume final user message needs no response
         elif next_message.get("From", "Unknown") == bot_address:
             # Use the sent time of the next bot message as due_time
             due_time = get_message_sent_time(next_message)
             delta = (due_time - current_time).total_seconds() / 60  # min to go
-            label = (True, 1.0) if delta < 90 else (False, 0.0)
+
+            if delta < 90:
+                label = (True, 1.0)
+            else:
+                # Delayed/scheduled response, validate now, before and after bot response
+                dt = current_time
+                while dt < due_time - timedelta(minutes=90):
+                    label = (False, 0.0)
+                    acc, loss, error = _validate(llm_handler, message_history, label,
+                                                 scheduler_model, bot_address, dt, verbose, DEBUG)
+                    if error:
+                        break
+                    accuracies.append(acc)
+                    losses.append(loss)
+                    dt += timedelta(days=1)
+
+                dt = due_time + timedelta(minutes=30)
+                label = (True, 1.0)
+                acc, loss, error = _validate(llm_handler, message_history, label, scheduler_model,
+                                             bot_address, dt, verbose, DEBUG)
+                if error:
+                    break
+                accuracies.append(acc)
+                losses.append(loss)
+                continue
         elif current_msg.get("From", "Unknown") == bot_address:
             continue  # skip, this works.
             label = (False, 0.0)  # no soliloquy!
         else:
             continue
 
-        prediction = llm_handler.schedule_response(message_history,
-                                                   model_id=scheduler_model,
-                                                   bot_address=bot_address,
-                                                   now=current_time)
-
-        if 'error' in prediction:
-            print(f'ERROR: {prediction["error"]}')
+        acc, loss, error = _validate(llm_handler, message_history, label, scheduler_model,
+                                     bot_address, current_time, verbose, DEBUG)
+        if error:
             break
+        accuracies.append(acc)
+        losses.append(loss)
 
-        response_is_due = prediction['response_is_due']
-        probability = prediction['probability']
-
-        losses.append(binary_cross_entropy(label[1], probability))
-        if response_is_due == label[0]:
-            print(f"PASSED: correct   prediction for message {i}: {prediction}")
-            accuracies.append(1)
-        else:
-            print(f"FAILED: incorrect prediction for message {i}: {prediction}, GT: {label}")
-            accuracies.append(0)
     print(f"Accuracy of response_is_due:       {np.mean(accuracies):.2f}")
     print(f"Loss from predicted probabilities: {np.mean(losses):.2f}")
 

@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import textwrap
 import requests
 from datetime import datetime
 from dotenv import load_dotenv
@@ -178,7 +179,8 @@ class LLMHandler:
         except Exception as e:
             return 'error', f"Error generating response: {str(e)} ({type(e)})"  # 'raw'
 
-    def schedule_response(self, emails, model_id=None, bot_address='acp@startup.com', now=None, verbose=False):
+    def schedule_response(self, emails, model_id=None, bot_address='acp@startup.com', now=None,
+                          verbose=False, DEBUG=False):
         """Decide whether a reponse is due.
 
         This agent gets the "From", "Date" and "body" attributes of each
@@ -192,7 +194,8 @@ class LLMHandler:
         """
         model_id = model_id or self.model_id
 
-        system_prompt = """You are an AI assistant that helps determine when to respond to email conversations.
+        system_prompt = """
+            You are an AI assistant that helps determine when to respond to email conversations.
 
             Analyze the email history and determine if a response is due based on:
             1. Time elapsed since the last email
@@ -206,7 +209,8 @@ class LLMHandler:
             - probability (float): between 0.0 and 1.0, representing the likelihood that a response is expected
 
             Only return valid JSON with these two fields and no additional text.
-            """.lstrip()
+            """
+        system_prompt = textwrap.dedent(system_prompt)
 
         # Deterministic checks
         if len(emails) == 0:
@@ -284,7 +288,9 @@ class LLMHandler:
         if verbose:
             print(f"System Prompt:\n{system_prompt}")
             print(f"User Prompt:\n{user_prompt}")
-            # return {'response_is_due': False, 'probability': 0.5}  # DEBUG
+
+        if DEBUG:
+            return {'response_is_due': False, 'probability': 0.5}  # Skip LLM call
 
         try:
             response = requests.post(
