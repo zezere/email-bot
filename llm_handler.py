@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 import email
 import numpy as np
-from utils import get_email_body, get_message_sent_time, count_words
+from utils import count_words, format_emails
 
 load_dotenv()
 
@@ -19,6 +19,7 @@ models_supporting_structured_output = {
     'google/gemma-3-27b-it:free',
     'google/gemini-2.0-flash-exp:free',
     'meta-llama/llama-3.1-8b-instruct',  # $/M tokens in/out: 0.1/0.1
+    'mistralai/mistral-small-24b-instruct-2501', # $/M tokens in/out: 0.1/0.3
     'mistralai/mistral-small-3.1-24b-instruct',  # $/M tokens in/out: 0.1/0.3
     'openai/gpt-4o-mini',  # $/M tokens in/out: 0.15/0.6
 }
@@ -223,27 +224,12 @@ class LLMHandler:
             # Always respond to first user mail
             return dict(response_is_due=True, probability=1.0)
 
-        # Format the email history for the prompt
-        email_history = []
-        for msg in emails:
-            # Format datetime in RFC 2822 format, like in email headers (skip seconds and TZ)
-            dt = get_message_sent_time(msg)
-            formatted_date = email.utils.format_datetime(dt)[:-9] if dt else "Unknown"
-
-            email_history.append({
-                # "From": msg.get("From", "Unknown"),  # probably slightly worse
-                "From": "assistant" if (msg.get("From", "Unknown") == bot_address) else "user",
-                "Date": formatted_date,
-                "Body": get_email_body(msg)
-            })
-
         # Create the user prompt with the email history
-        # TODO: Verify: LLM understands JSON better than human-readable emails
-        # To preserve emojis, set ensure_ascii=False
+        email_history = format_emails(emails, style='json', bot_address=bot_address)
         now = now or datetime.now()
         user_prompt = (
             "Here is the email conversation history:\n"
-            f"{json.dumps(email_history, indent=2, ensure_ascii=False)}\n"
+            f"{email_history}\n"
             f"\nCurrent time: {email.utils.format_datetime(now)[:-9]}\n\n"
             "Based on this information, determine if a response is due now."
             )
@@ -284,6 +270,8 @@ class LLMHandler:
 
         if model_id in models_supporting_structured_output:
             openrouter_json['response_format'] = response_format
+        else:
+            print(f"WARNING: schedule_response uses model w/o response_format: {model_id}")
 
         if verbose:
             print(f"System Prompt:\n{system_prompt}")
@@ -375,6 +363,9 @@ class LLMHandler:
                                   user email right now.
         - probability (float):    likelihood that the user expects a response or reminder
                                   from the assistant right now.
+
+        The system prompt has auxiliary tasks that might be easier for the LLM, the return values are
+        then inferred deterministically.
         """
         model_id = model_id or self.model_id
 
@@ -392,16 +383,16 @@ class LLMHandler:
             the assistent might respond again to address those concerns.
 
             Only if the user gives the impression that he/she wants to end the conversation for now,
-            assume a scheduled response by the assistant or user.
+            assume a scheduled response by the assistant or user when they intent to check in again.
 
             Return your predictions in JSON format with these fields:
+            - analysis (str): summarize questions (implicit or explicit) from the last message and explain who will respond next and with what intent
             - assistant_is_next (boolean): true if the assistant might send the next message, false otherwise
             - date (str): date and time of next expected message in email (RFC 2822) format
 
-            Only return valid JSON with these two fields and no additional text.
+            Only return valid JSON with these two fields and no additional text. Here are some examples, complete the last one:
 
-            Example 1.
-            Input:
+            <Input>
             From: user
             Date: Mon, 31 Mar 2025 14:35
             Content: OK, I'm really pumped now, I will see how the first week will go, will report you next Friday.
@@ -410,71 +401,72 @@ class LLMHandler:
             Date: Mon, 31 Mar 2025 14:40
             Content: Looking forward to the update!
 
-            Output:
-            {'assistant_is_next': false, 'date': 'Fri, 04 Apr 2025 14:35'}
+            <JSON>
+            {"analysis": "The user has no questions and will respond next to report how the first week went.", "assistant_is_next": false, "date": "Fri, 04 Apr 2025 14:35"}
 
-            Example 2.
-            Input:
+            <Input>
             From: user
             Date: Sun, 30 Mar 2025 16:30
             Content: I have to go now, Sunday evening works great for me. Talk to you in a two weeks!
 
-            Output:
-            {'assistant_is_next': false, 'date': 'Sun, 13 Apr 2025 19:00'}
+            <JSON>
+            {"analysis": "The user has no questions and will respond next to continue the conversation.", "assistant_is_next": false, "date": "Sun, 13 Apr 2025 19:00"}
 
-            Example 3.
-            Input:
+            <Input>
             From: user
             Date: Wed, 02 Apr 2025 11:30
-            Content: Sounds perfect, I'll let you know how on Wednesday how the session went! Any final advice?
+            Content: Sounds perfect, I'll let you know on Wednesday how the session went! Any final advice?
 
-            Output:
-            {'assistant_is_next': true, 'date': 'Wed, 02 Apr 2025 11:33'}
+            <JSON>
+            {"analysis": "The user agrees to report back on Wednesday but asks for final advice. The assistant might respond next to give that advice.", "assistant_is_next": true, "date": "Wed, 02 Apr 2025 11:33"}
 
-            Example 4.
-            Input:
+            <Input>
             From: user
             Date: Sat, 05 Apr 2024 16:00
             Content: Twice a week sounds a lot. Let's see what I can do.
 
-            Output:
-            {'assistant_is_next': true, 'date': 'Sat, 05 Apr 2024 16:03'}
+            <JSON>
+            {"analysis": "The user has doubts. The assistant will respond next to address these doubts.", "assistant_is_next": true, "date": "Sat, 05 Apr 2024 16:03"}
+
+            <Input>
+            From: user
+            Date: Tue, 08 Jul 2024 22:00
+            Content: Great! Should I takes notes when this happens? Could be an idea. I'm looking forward to our next session!
+
+            <JSON>
+            {"analysis": "The user asks about taking notes. The assistant might respond to that idea", "assistant_is_next": true, "date": "Tue, 08 Jul 2024 22:03"}
             """
         system_prompt = textwrap.dedent(system_prompt)
 
         # Deterministic checks
         if len(emails) == 0:
-            print("EMPTY list of emails!")
-            return
+            print("ERROR: empty list of emails")
+            return dict(error='ERROR: empty list of emails')
         if emails[-1].get("From", "Unknown") == bot_address:
             # Don't respond to self
-            return dict(response_is_due=False, probability=0.0)
+            return dict(reasoning='deterministic', response_is_due=False, probability=0.0)
         if (len(emails) == 1) and (emails[0].get("From", "Unknown") != bot_address):
             # Always respond to first user mail
-            return dict(response_is_due=True, probability=1.0)
+            return dict(reasoning='deterministic', response_is_due=True, probability=1.0)
 
         # Create the user prompt with all email messages in human-readable format
-        email_history = ['Input:']
-        for msg in emails:
-            # Format datetime in RFC 2822 format, like in email headers (skip seconds and TZ)
-            dt = get_message_sent_time(msg)
-            formatted_date = email.utils.format_datetime(dt)[:-9] if dt else "Unknown"
-            sender = "assistant" if (msg.get("From", "Unknown") == bot_address) else "user"
-            email_history.append(
-                f'From: {sender}\n'
-                f'Date: {formatted_date}\n'
-                f'Content: {get_email_body(msg)}---'
-            )
-        user_prompt = '\n'.join(email_history)
 
+        user_prompt = format_emails(emails, style="human", bot_address=bot_address)
+
+        # "analysis": auxiliary task: allows non-reasoning LLMs to think, used only for debugging
+        # "assistant_is_next": auxiliary task, affects how "date" is evaluated
         response_format = {
             "type": "json_schema",
             "json_schema": {
-                "name": "next_message",
+                "name": "conversation_analysis",
                 "strict": True,
                 "schema": {
                     "type": "object",
                     "properties": {
+                        "analysis": {
+                            "type": "string",
+                            "description": "Summarize open questions (if any), think step by step: who will answer next?"
+                        },
                         "assistant_is_next": {
                             "type": "boolean",
                             "description": "Whether the next message might be send by the agent"
@@ -484,7 +476,7 @@ class LLMHandler:
                             "description": "Expected date and time of next message in email (RFC 2822) format"
                         }
                     },
-                    "required": ["assistant_is_next", "date"],
+                    "required": ["analysis", "assistant_is_next", "date"],
                     "additionalProperties": False
                 }
             }
@@ -501,13 +493,15 @@ class LLMHandler:
 
         if model_id in models_supporting_structured_output:
             openrouter_json['response_format'] = response_format
+        else:
+            print(f"WARNING: schedule_response uses model w/o response_format: {model_id}")
 
         if verbose:
-            print(f"System Prompt:\n{system_prompt}")
+            print(f"\n\nSystem Prompt:\n{system_prompt}")
             print(f"User Prompt:\n{user_prompt}")
 
         if DEBUG:
-            return {'response_is_due': False, 'probability': 0.5}  # Skip LLM call
+            return {'reasoning': 'DEBUG', 'response_is_due': False, 'probability': 0.5}  # Skip LLM call
 
         try:
             response = requests.post(
@@ -527,11 +521,7 @@ class LLMHandler:
                             print(error['metadata']['raw'])
                     else:
                         print(response.json())
-                    return {
-                        "response_is_due": False,
-                        "probability": 0.0,
-                        "error": f"Error: {response.status_code} - {response.text}"
-                    }
+                    return dict(error=f"Error: {response.status_code} - {response.text}")
                 content = response.json()["choices"][0]["message"]["content"].strip()
 
                 # Parse the JSON response
@@ -539,15 +529,12 @@ class LLMHandler:
                     result = json.loads(content)
                     # Validate the response has the required fields
                     if "assistant_is_next" in result and "date" in result:
-                        return self._validate_output(result, now)
+                        return self._evaluate_output(result, now)
                     else:
-                        return {
-                            "response_is_due": False,
-                            "probability": 0.0,
-                            "error": "Invalid response format from LLM"
-                        }
+                        return dict(error="Invalid response format from LLM")
                 except json.JSONDecodeError:
                     # If the response isn't valid JSON, try to extract it using regex
+                    print("WARNING: LLM did not return JSON, trying with regex...")
                     assistant_is_next_pattern = r'"assistant_is_next"\s*:\s*(true|false)'
                     date_pattern = r'"date"\s*:\s*"([^"]+)"'
 
@@ -559,28 +546,18 @@ class LLMHandler:
                             "assistant_is_next": assistant_match.group(1).lower() == "true",
                             "date": date_match.group(1),
                         }
-                        return self._validate_output(result, now)
+                        return self._evaluate_output(result, now)
                     else:
-                        return {
-                            "response_is_due": False,
-                            "probability": 0.0,
-                            "error": "Failed to parse LLM response"
-                        }
+                        print("ERROR: Also regex failed to match LLM response:")
+                        print(textwrap.indent(content, '    '))
+                        return dict(error="Failed to parse LLM response")
             else:
-                return {
-                    "response_is_due": False,
-                    "probability": 0.0,
-                    "error": f"Error: {response.status_code} - {response.text}"
-                }
+                return dict(error=f"Error: {response.status_code} - {response.text}")
 
         except Exception as e:
-            return {
-                "response_is_due": False,
-                "probability": 0.0,
-                "error": f"Error: {str(e)}"
-            }
+            return dict(error=f"Error: {str(e)}")
 
-    def _validate_output(self, result, now=None):
+    def _evaluate_output(self, result, now=None):
         """
         Validates the output from the LLM and converts it to the expected format.
 
@@ -593,14 +570,9 @@ class LLMHandler:
         """
         now = now or datetime.now()
 
-        # Default response if we can't parse the date
-        default_response = {
-            "response_is_due": True,
-            "probability": 1.0,
-            "error": "Invalid date format"
-        }
-
         try:
+            analysis = result.get("analysis", "None")
+
             # Parse the predicted date
             predicted_date_str = result.get("date", "")
 
@@ -614,10 +586,12 @@ class LLMHandler:
                     from dateutil import parser
                     predicted_date = parser.parse(predicted_date_str)
                 except (ValueError, ImportError):
-                    return default_response
+                    return dict(error="Invalid date format")
 
             # DEBUG output
-            print(f"\n                       predicted DATE: {predicted_date}   SENDER: {'assistant' if result['assistant_is_next'] else 'user'}")
+            print(f"\nFields in result: {list(result.keys())}")
+            print(f"Analysis: {analysis}")
+            print(f"                       predicted DATE: {predicted_date}   SENDER: {'assistant' if result['assistant_is_next'] else 'user'}")
 
             # Calculate time till scheduled response in minutes
             min_ahead = (predicted_date - now).total_seconds() / 60
@@ -625,16 +599,14 @@ class LLMHandler:
             # If assistant is next, respond now or when scheduled, otherwise wait 90 min
             patience = 0 if result.get("assistant_is_next", True) else 90
             if min_ahead + patience <= 0:
+                print(f"Deterministic logic: min_ahead ({min_ahead}) + patience ({patience}) <= 0, reponse is due.")  # DEBUG
                 return {"response_is_due": True, "probability": 1.0}
             else:
+                print(f"Deterministic logic: min_ahead ({min_ahead}) + patience ({patience}) > 0, reponse is not due.")  # DEBUG
                 return {"response_is_due": False, "probability": 0.0}
 
         except Exception as e:
-            return {
-                "response_is_due": False,
-                "probability": 0.0,
-                "error": f"Error validating output: {str(e)}"
-            }
+            return dict(error=f"Error validating output: {str(e)}")
 
     # TODO: moderation should take subject into account as well
     def moderate_email(self, email_content):

@@ -175,9 +175,9 @@ def test_validation():
 
     llm_handler = LLMHandler()
     validation_model = 'mistralai/mistral-small-24b-instruct-2501:free'
-    #gt_model = 'deepseek/deepseek-chat-v3-0324:free'  # no structured output
+    # gt_model = 'deepseek/deepseek-chat-v3-0324:free'  # no structured output
     gt_model = 'google/gemini-2.5-pro-exp-03-25:free'  # structured output, but RESOURCE_EXHAUSTED
-    #gt_model = 'google/gemini-2.0-flash-lite-preview-02-05:free'  # structured output
+    # gt_model = 'google/gemini-2.0-flash-lite-preview-02-05:free'  # structured output
 
     test_emails = get_test_emails(100)
     test_labels = [None for _ in test_emails]
@@ -257,20 +257,25 @@ def test_scheduler(emails=None, bot_address='acp@startup.com'):
     generated from conversation time stamps.
     """
     llm_handler = LLMHandler()
-    scheduler_model = 'mistralai/mistral-small-24b-instruct-2501:free'  # OK
-    #scheduler_model = 'deepseek/deepseek-chat-v3-0324:free'  # no structured output
-    #scheduler_model = 'google/gemini-2.5-pro-exp-03-25:free'  # structured output, but RESOURCE_EXHAUSTED
-    #scheduler_model = 'google/gemini-2.0-flash-exp:free'  # OK but due/probability inconsistent
-    #scheduler_model = 'meta-llama/llama-3.1-8b-instruct'  # worse
-    #scheduler_model = 'mistralai/mistral-small-3.1-24b-instruct'  # worse
-    #scheduler_model = 'openai/gpt-4o-mini'  # acc better, probas worse
+    scheduler_model = 'openrouter/quasar-alpha'  # free+cloaked, excels at this task!
+    # scheduler_model = 'mistralai/mistral-small-24b-instruct-2501'  #  0.1/0.3 $/M tokens in/out
+    # scheduler_model = 'deepseek/deepseek-chat-v3-0324:free'  # no structured output
+    # scheduler_model = 'google/gemini-2.5-pro-exp-03-25:free'  # structured output, but RESOURCE_EXHAUSTED
+    # scheduler_model = 'google/gemini-2.0-flash-exp:free'  # OK but due/probability inconsistent
+    # scheduler_model = 'meta-llama/llama-3.1-8b-instruct'  # plain stupid (8b params), needs very clear prompt
+    # scheduler_model = 'mistralai/mistral-small-3.1-24b-instruct'  # worse
+    # scheduler_model = 'openai/gpt-4o-mini'  # better reasoning than mistral-small-24b-instruct, but also 2x more expensive
 
-    verbose = False  # print prompts
+    verbose = True  # print prompts
     DEBUG = False  # skip LLM calls
+    exit_on_first_mistake = True
 
     # topic = 'Weight Loss Journey'
     # topic = 'Financial Discipline'
-    topic = 'Startup Entrepreneurship'
+    # topic = 'Startup Entrepreneurship'
+    # topic = 'Practicing a Hobby Goal'
+    topic = 'Studying Estonian'
+
     test_emails = emails or convert_messages_to_emails(topic)
 
     print('\nTesting scheduler agents')
@@ -279,20 +284,22 @@ def test_scheduler(emails=None, bot_address='acp@startup.com'):
     print(f'Conversation:      {topic} ({len(test_emails)} messages)')
 
     def _validate(llm_handler, message_history, label, model_id, bot_address, current_time,
-                  verbose, DEBUG):
+                  verbose, DEBUG, exit_on_first_mistake=False):
         prediction = llm_handler.schedule_response_v2(message_history,
-                                                   model_id=model_id,
-                                                   bot_address=bot_address,
-                                                   now=current_time,
-                                                   verbose=verbose,
-                                                   DEBUG=DEBUG)
+                                                      model_id=model_id,
+                                                      bot_address=bot_address,
+                                                      now=current_time,
+                                                      verbose=verbose,
+                                                      DEBUG=DEBUG)
 
-        response_is_due = prediction['response_is_due']
-        probability = prediction['probability']
+        # Check for error first
         error = prediction.get('error', None)
         if error:
             print(f'ERROR: {error}')
             return None, None, error
+
+        response_is_due = prediction['response_is_due']
+        probability = prediction['probability']
 
         loss = binary_cross_entropy(label[1], probability)
         if response_is_due == label[0]:
@@ -301,7 +308,8 @@ def test_scheduler(emails=None, bot_address='acp@startup.com'):
         else:
             print(f"FAILED: incorrect prediction for msg {i} {current_time}: {prediction}, GT: {label}")
             acc = 0
-            exit()
+            if exit_on_first_mistake:
+                exit()
 
         return acc, loss, error
 
@@ -310,8 +318,8 @@ def test_scheduler(emails=None, bot_address='acp@startup.com'):
         # Conversation to this end
         message_history = test_emails[:i + 1]
 
-        # Set current time to 5 min after current_message's sent time
-        current_time = get_message_sent_time(current_msg, debug=True) + timedelta(minutes=5)
+        # Set current time to 15 min after current_message's sent time (5 min may cause false negatives)
+        current_time = get_message_sent_time(current_msg, debug=True) + timedelta(minutes=15)
         next_message = test_emails[i + 1] if i + 1 < len(test_emails) else None
 
         # Define test cases
@@ -322,17 +330,19 @@ def test_scheduler(emails=None, bot_address='acp@startup.com'):
         elif next_message.get("From", "Unknown") == bot_address:
             # Use the sent time of the next bot message as due_time
             due_time = get_message_sent_time(next_message)
-            delta = (due_time - current_time).total_seconds() / 60  # min to go
+            min_ahead = (due_time - current_time).total_seconds() / 60  # min to go
 
-            if delta < 90:
+            if min_ahead < 90:
+                # Bot should answer within 90 min or (reminder) max 90 min before schedule
                 label = (True, 1.0)
             else:
                 # Delayed/scheduled response, validate now, before and after bot response
                 dt = current_time
+                print(f"Message {i+1} is delayed, testing prediction for msg {i} at various times...")
                 while dt < due_time - timedelta(minutes=90):
                     label = (False, 0.0)
-                    acc, loss, error = _validate(llm_handler, message_history, label,
-                                                 scheduler_model, bot_address, dt, verbose, DEBUG)
+                    acc, loss, error = _validate(llm_handler, message_history, label, scheduler_model,
+                                                 bot_address, dt, verbose, DEBUG, exit_on_first_mistake)
                     if error:
                         break
                     accuracies.append(acc)
@@ -342,7 +352,7 @@ def test_scheduler(emails=None, bot_address='acp@startup.com'):
                 dt = due_time + timedelta(minutes=90)
                 label = (True, 1.0)
                 acc, loss, error = _validate(llm_handler, message_history, label, scheduler_model,
-                                             bot_address, dt, verbose, DEBUG)
+                                             bot_address, dt, verbose, DEBUG, exit_on_first_mistake)
                 if error:
                     break
                 accuracies.append(acc)
@@ -355,7 +365,7 @@ def test_scheduler(emails=None, bot_address='acp@startup.com'):
             continue
 
         acc, loss, error = _validate(llm_handler, message_history, label, scheduler_model,
-                                     bot_address, current_time, verbose, DEBUG)
+                                     bot_address, current_time, verbose, DEBUG, exit_on_first_mistake)
         if error:
             break
         accuracies.append(acc)
