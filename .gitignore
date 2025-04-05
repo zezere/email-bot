@@ -2,6 +2,8 @@ run_bot.sh
 testing.py
 .env
 data/
+shell/
+ai-cookbook-main/
 
 # Python
 __pycache__/
