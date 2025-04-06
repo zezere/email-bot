@@ -4,6 +4,7 @@ from email_handler import EmailHandler
 from llm_handler import LLMHandler
 import email.utils
 import re
+from utils import get_email_body
 
 
 class Bot:
@@ -82,13 +83,6 @@ class Bot:
         #     self.email_handler.send_email(
         #         email, "Progress Update Received", "Thanks for your update! Keep going!"
         #     )
-
-def get_email_body(email):
-    if email.is_multipart():
-        for part in email.walk():
-            if part.get_content_type() == "text/plain":
-                return part.get_payload(decode=True).decode()
-    return email.get_payload(decode=True).decode()
 
 def is_valid_email_address(email_address):
     pattern = r'^[a-zA-Z0-9._%+-]+@(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$'
