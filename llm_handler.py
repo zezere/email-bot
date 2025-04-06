@@ -372,7 +372,7 @@ class LLMHandler:
         system_prompt = """
             You support an AI assistant that plays the role of an accountability partner for a human user.
             Your task is to help the assistant with sending responses to the user timely and schedule
-            reminder messages when the user has commited to check-in with the assistant but is overdue.
+            reminder messages when the user has committed to check-in with the assistant but is overdue.
 
             Analyze the conversation regarding scheduling and commitments and predict:
             1. Who might send the next message, user or assistant?
@@ -380,17 +380,17 @@ class LLMHandler:
 
             Also analyze the last user message carefully: If the user expresses any doubt,
             asks a question, or simply needs more advice or encouragement,
-            the assistent might respond again to address those concerns.
+            the assistant might respond again to address those concerns.
 
             Only if the user gives the impression that he/she wants to end the conversation for now,
-            assume a scheduled response by the assistant or user when they intent to check in again.
+            assume a scheduled response by the assistant or user when they intend to check in again.
 
             Return your predictions in JSON format with these fields:
             - analysis (str): summarize questions (implicit or explicit) from the last message and explain who will respond next and with what intent
             - assistant_is_next (boolean): true if the assistant might send the next message, false otherwise
             - date (str): date and time of next expected message in email (RFC 2822) format
 
-            Only return valid JSON with these two fields and no additional text. Here are some examples, complete the last one:
+            Only return valid JSON with these three fields and no additional text. Here are some examples, complete the last one:
 
             <Input>
             From: user
