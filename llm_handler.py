@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import time
 import textwrap
 import requests
 from datetime import datetime
@@ -30,7 +31,6 @@ def get_available_models():
 
 # Try to get list of available OpenRouter models on module import
 available_models = get_available_models()
-
 
 models_supporting_structured_output = {
     'google/gemini-2.5-pro-exp-03-25:free',
@@ -75,17 +75,60 @@ class LLMHandler:
 
 
     def get_model_pricing(self, model_id=None):
-        """Returns tokenizer, input pricing, output pricing (USD/token)."""
+        """Returns input pricing, output pricing (USD/token)."""
+        # data['architecture']['tokenizer'] values are neither correct not supported by tiktoken
         model_id = model_id or self.model_id
         try:
             data = available_models[model_id]
-            tokenizer = data['architecture']['tokenizer']
             pricing_in = float(data['pricing']['prompt'])
             pricing_out = float(data['pricing']['completion'])
         except KeyError as e:
             print(f"Error: missing pricing data {e} for model {model_id}")
             return None, None, None
-        return tokenizer, pricing_in, pricing_out
+        return pricing_in, pricing_out
+
+
+    def get_cost_estimate(self, model_id=None, prompts=[], output=''):
+        """Returns a quick estimate of # input tokens, # output tokens, and total cost.
+
+        The real numbers differ because native tokenizer is not known and
+        Prompt Caching is not taken into account.
+        """
+        model_id = model_id or self.model_id
+        tokenizer = "gpt-4o"  # native tokenizer is usually not available
+        price_in, price_out = self.get_model_pricing(model_id)
+        try:
+            encoding = tiktoken.encoding_for_model(tokenizer)
+        except Exception as e:
+            print(f"Error in tiktoken encoding: {e}")
+            return 0, 0, 0
+        num_input_tokens = len(encoding.encode("\n".join(prompts)))
+        num_output_tokens = len(encoding.encode(output))
+        cost = num_input_tokens * price_in + num_output_tokens * price_out
+        return num_input_tokens, num_output_tokens, cost
+
+
+    def get_cost(self, generation_id):
+        """Returns real num_input_tokens, num_output_tokens, cost.
+
+        Slower: has to wait for OpenRouter usage database to update.
+        """
+        cost = 0
+        # Wait a sec for database to receive the generation data
+        time.sleep(1)
+        try:
+            generation = requests.get(f'https://openrouter.ai/api/v1/generation',
+                                      headers=self.openrouter_headers,
+                                      params={"id": generation_id})
+            data = generation.json()["data"]
+            num_input_tokens = data.get("native_tokens_prompt", data.get("tokens_prompt", 0))
+            num_output_tokens = data.get("native_tokens_completion", data.get("tokens_completion", 0))
+            cost = data.get("total_cost", data.get("usage", 0))
+        except Exception as e:
+            print(f"Error in get_cost: {e}")
+            print(json.dumps(generation.json(), indent=2))
+            return 0, 0, 0
+        return num_input_tokens, num_output_tokens, cost
 
 
     def validate_email(self, email_sender, email_subject, email_body, model_id=None, subject_cutoff=50, body_cutoff=500):
@@ -586,17 +629,12 @@ class LLMHandler:
             return dict(error=f"Error: {e}")
 
         # Count input/output tokens, calculate LLM cost
-        tokenizer, price_in, price_out = self.get_model_pricing(model_id)
-        if tokenizer:
-            try:
-                encoding = tiktoken.encoding_for_model(tokenizer)
-            except Exception:
-                print("tiktoken: tokenizer {tokenizer} not supported, using gpt-3.5-turbo instead")
-                encoding = tiktoken.encoding_for_model("gpt-3.5-turbo")
-            num_input_tokens = len(encoding.encode("\n".join([system_prompt, user_prompt])))
-            num_output_tokens = len(encoding.encode(content))
-            cost = num_input_tokens * price_in + num_output_tokens * price_out
-            print(f"Tokens in: {num_input_tokens}, out: {num_output_tokens}, total cost: (USD) {cost}")
+        num_input_tokens, num_output_tokens, cost = self.get_cost_estimate(model_id, [system_prompt, user_prompt], content)
+        print(f"Tokens in: {num_input_tokens}, out: {num_output_tokens}, total cost: (USD) {cost:.6f} (estimate)")
+        generation_id = response.json().get("id", None)
+        if generation_id:
+            num_input_tokens, num_output_tokens, cost = self.get_cost(generation_id)
+            print(f"Tokens in: {num_input_tokens}, out: {num_output_tokens}, total cost: (USD) {cost:.6f} (real)")
 
         # Parse the JSON structured output
         try:
