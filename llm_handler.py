@@ -54,10 +54,9 @@ class LLMHandler:
             "Content-Type": "application/json",
             "HTTP-Referer": "https://github.com/yourusername/email-bot",
         }
-        #self.model_id = 'mistralai/mistral-7b-instruct'  # $0.03/M in, $0.055/M out
-        self.model_id = "mistralai/mistral-small-24b-instruct-2501:free"  # Free model
+        self.model_id = 'mistralai/mistral-7b-instruct'  # $0.03/M in, $0.055/M out
+        #self.model_id = "mistralai/mistral-small-24b-instruct-2501:free"  # Free model
         self.llm_timeout = 5  # response timeout in seconds
-
 
     def get_rate_limits(self):
         try:
@@ -73,7 +72,6 @@ class LLMHandler:
             except Exception:
                 pass
 
-
     def get_model_pricing(self, model_id=None):
         """Returns input pricing, output pricing (USD/token)."""
         # data['architecture']['tokenizer'] values are neither correct not supported by tiktoken
@@ -86,7 +84,6 @@ class LLMHandler:
             print(f"Error: missing pricing data {e} for model {model_id}")
             return None, None, None
         return pricing_in, pricing_out
-
 
     def get_cost_estimate(self, model_id=None, prompts=[], output=''):
         """Returns a quick estimate of # input tokens, # output tokens, and total cost.
@@ -106,7 +103,6 @@ class LLMHandler:
         num_output_tokens = len(encoding.encode(output))
         cost = num_input_tokens * price_in + num_output_tokens * price_out
         return num_input_tokens, num_output_tokens, cost
-
 
     def get_cost(self, generation_id):
         """Returns real num_input_tokens, num_output_tokens, cost.
@@ -129,7 +125,6 @@ class LLMHandler:
             print(json.dumps(generation.json(), indent=2))
             return 0, 0, 0
         return num_input_tokens, num_output_tokens, cost
-
 
     def validate_email(self, email_sender, email_subject, email_body, model_id=None, subject_cutoff=50, body_cutoff=500):
         """Identify spam/DoS using a free or cheap OpenRouter LLM.
@@ -272,7 +267,6 @@ class LLMHandler:
         except Exception as e:
             return 'error', f"Error generating response: {str(e)} ({type(e)})"  # 'raw'
 
-
     def schedule_response(self, emails, model_id=None, bot_address='acp@startup.com', now=None,
                           verbose=False, DEBUG=False):
         """Decide whether a reponse is due.
@@ -319,7 +313,7 @@ class LLMHandler:
 
         # Create the user prompt with the email history
         email_history = format_emails(emails, style='json', bot_address=bot_address)
-        now = now or datetime.now()
+        now = now or datetime.now().astimezone()
         user_prompt = (
             "Here is the email conversation history:\n"
             f"{email_history}\n"
@@ -531,19 +525,7 @@ class LLMHandler:
             """
         system_prompt = textwrap.dedent(system_prompt)
 
-        # Deterministic checks
-        if len(emails) == 0:
-            print("ERROR: empty list of emails")
-            return dict(error='ERROR: empty list of emails')
-        if emails[-1].get("From", "Unknown") == bot_address:
-            # Don't respond to self
-            return dict(reasoning='deterministic', response_is_due=False, probability=0.0)
-        if (len(emails) == 1) and (emails[0].get("From", "Unknown") != bot_address):
-            # Always respond to first user mail
-            return dict(reasoning='deterministic', response_is_due=True, probability=1.0)
-
         # Create the user prompt with all email messages in human-readable format
-
         user_prompt = format_emails(emails, style="human", bot_address=bot_address)
 
         # "analysis": auxiliary task: allows non-reasoning LLMs to think, used only for debugging
@@ -665,7 +647,6 @@ class LLMHandler:
                 print(textwrap.indent(content, '    '))
                 return dict(error="Failed to parse LLM response")
 
-
     def _evaluate_output(self, result, now=None):
         """
         Validates the output from the LLM and converts it to the expected format.
@@ -675,9 +656,9 @@ class LLMHandler:
             now (datetime, optional): Current datetime. Defaults to datetime.now().
 
         Returns:
-            dict: Dictionary with 'response_is_due', 'probability', and optional 'error' fields
+            dict: Dictionary with 'response_is_due', 'probability', 'scheduled_for', and optional 'error' fields
         """
-        now = now or datetime.now()
+        now = now or datetime.now().astimezone()
 
         try:
             analysis = result.get("analysis", "None")
@@ -697,6 +678,11 @@ class LLMHandler:
                 except (ValueError, ImportError):
                     return dict(error="Invalid date format")
 
+            # If the parsed date is naive, make it aware using the local timezone
+            if predicted_date.tzinfo is None:
+                print("adding system timezone to predicted_date")
+                predicted_date = predicted_date.replace(tzinfo=now.tzinfo)
+
             # DEBUG output
             print(f"\nFields in result: {list(result.keys())}")
             print(f"Analysis: {analysis}")
@@ -712,7 +698,7 @@ class LLMHandler:
                 return {"response_is_due": True, "probability": 1.0}
             else:
                 print(f"Deterministic logic: min_ahead ({min_ahead}) + patience ({patience}) > 0, reponse is not due.")  # DEBUG
-                return {"response_is_due": False, "probability": 0.0}
+                return {"response_is_due": False, "probability": 0.0, "scheduled_for": predicted_date}
 
         except Exception as e:
             return dict(error=f"Error validating output: {str(e)}")
@@ -769,8 +755,8 @@ class LLMHandler:
         except Exception as e:
             return False, f"Error during moderation: {str(e)}"
 
-    def generate_response(self, email_content, subject, sender_name):
-        """Generate an intelligent response using OpenRouter's free LLM."""
+    def generate_response(self, user_email_address, bot_address, email_subject, emails):
+        """Generate a chat completion with the role of an Accountability Partner."""
         system_prompt = """You are an accountability partner bot that helps users achieve their goals through email communication.
         Your responses should be:
         1. Encouraging and supportive
@@ -778,16 +764,13 @@ class LLMHandler:
         3. Professional but friendly
         4. Brief and concise
         5. Action-oriented when appropriate
-        
+
         If the email is a "start" message, welcome the user and acknowledge their goal.
         If it's an update, provide encouragement and ask about next steps or challenges.
         """
 
-        user_prompt = f"""Email from {sender_name}:
-        Subject: {subject}
-        Content: {email_content}
-        
-        Please provide a supportive response that helps them stay accountable to their goals."""
+        messages = [{"role": "system", "content": system_prompt}]
+        messages.extend(format_emails(emails, style='chat'))
 
         try:
             response = requests.post(
@@ -795,19 +778,17 @@ class LLMHandler:
                 headers=self.openrouter_headers,
                 json={
                     "model": "mistralai/mistral-7b-instruct",  # Free model
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
+                    "messages": messages,
                     "temperature": 0.7,  # Balanced between creativity and consistency
                 },
                 timeout=self.llm_timeout
             )
 
             if response.status_code == 200:
-                return response.json()["choices"][0]["message"]["content"].strip()
+                content = response.json()["choices"][0]["message"]["content"].strip()
+                return content
             else:
-                return f"Error generating response: {response.status_code} - {response.text}"
+                print(f"Error generating response: {response.status_code} - {response.text}")
 
         except Exception as e:
-            return f"Error generating response: {str(e)}"
+            print(f"Error generating response: {str(e)}")
