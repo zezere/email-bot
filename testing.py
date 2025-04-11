@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from database import init_db
 from email_handler import EmailHandler
 import email.utils
@@ -10,9 +10,11 @@ from email.message import EmailMessage
 import random
 import tiktoken
 import numpy as np
+from functools import partial
+import hashlib
 
 
-def get_test_emails(n=5, to='acp@startup.com'):
+def generate_test_emails(n=3, to='acp@startup.com'):
     """Returns a list of fake emails: invalid, spam, and legitimate."""
     addresses = [
         'asdlfkj21313@hotmail.c',  # invalid address
@@ -33,15 +35,25 @@ def get_test_emails(n=5, to='acp@startup.com'):
                   'to keep me on track with my new project. How does this work?')
 
     emails = []
-    for _ in range(n):
+    for i in range(n):
         msg = EmailMessage()
-        msg['From'] = random.choice(addresses)
+        msg['From'] = addresses[-1] if (i == 0) else random.choice(addresses)
         msg['To'] = to
         msg['Message-Id'] = '202503252000.' + str(random.randint(0, 1000000))
-        msg['Subject'] = random.choice(subjects)
-        msg.set_content(random.choice(bodies))
+        msg['Subject'] = subjects[-1] if (i == 0) else random.choice(subjects)
+
+        msg['Date'] = get_random_datetime(max_age_hours=3).isoformat()
+
+        msg.set_content(bodies[-1] if (i == 0) else random.choice(bodies))
         emails.append(msg)
     return emails
+
+
+def get_random_datetime(max_age_hours=3):
+    """Returns a random time in the past with random time zone (tz_info)."""
+    random_timezone = timezone(timedelta(seconds=random.randint(-12, 14)))  # Random offset between -12 and +14 hours
+    random_delay_sec = timedelta(seconds=random.randint(0, 3600 * max_age_hours))
+    return datetime.now(random_timezone) - random_delay_sec
 
 
 def grab_test_conversation(topic: str):
@@ -82,17 +94,26 @@ def convert_messages_to_emails(topic, messages=None, user_address='john.doe@gmai
         msg = EmailMessage()
         msg['From'] = sender['address']
         msg['To'] = recipient['address']
-        msg['Message-Id'] = '202503252000.' + str(random.randint(0, 1000000))
         if isinstance(response_time, int):
             num_messages_that_follow = len(messages) - i
-            dt = datetime.now() - timedelta(minutes=response_time * num_messages_that_follow)
+            dt = datetime.now().astimezone() - timedelta(minutes=response_time * num_messages_that_follow)
             msg['Date'] = dt.isoformat()
         elif isinstance(response_time, list) and len(response_time) > i:
             msg['Date'] = response_time[i].isoformat()
+        else:
+            raise ValueError("Have no Date for email")
         msg['Subject'] = topic
         msg.set_content(message)
+        msg['Message-Id'] = hashlib.md5((message + msg['Subject'] + msg['Date']).encode()).hexdigest()
+
         emails.append(msg)
     return emails
+
+
+def fake_send_email(to_email, subject, body):
+    print(f"Sending (faked) email to {to_email} ({subject}):")
+    print(body)
+    print('-' * 50)
 
 
 def test_bot():
@@ -107,14 +128,31 @@ def test_bot():
     bot = Bot()
 
     # If mail server is no configured in .env, test with fake mails
-    if bot.email_handler.email is None:
-        print("Using fake emails for testing.")
-        bot.email_handler.check_inbox = get_test_emails
+    if (bot.email_handler.email is None) or ('test' in bot.email_handler.email):
+        # print("Using fake emails for testing.")
+        # bot.email_handler.check_inbox = generate_test_emails
+        topic = "Startup Entrepreneurship"
+        bot.email_handler.check_inbox = partial(convert_messages_to_emails, topic=topic,
+                                                bot_address=bot.email_handler.email)
+        bot.email_handler.send_email = fake_send_email
 
     # Process new emails
-    print("Starting email processing...")
+    print("\nStarting email processing (process_new_emails)...")
+    bot.llm_handler.model_id = 'mistralai/mistral-7b-instruct'  # validate_email
     bot.process_new_emails()
-    print("Email processing completed")
+
+    print("\nStarting schedule policy processing (process_schedules)...")
+    bot.process_schedules()
+
+    print("\nManage conversations (schedule_response)...")
+    print(f"The bot will call scheduler_agent on {len(bot.ask_agent)} conversations")
+    bot.llm_handler.model_id = 'mistralai/mistral-small-24b-instruct-2501'  # schedule_response
+    bot.manage_conversations()
+
+    print(f"\nGenerating {len(bot.active_conversations)} responses (generate_response)...")
+    bot.llm_handler.model_id = 'mistralai/mistral-small-24b-instruct-2501'  # generate_response
+    bot.generate_responses()
+
     print("-" * 50)
 
 
@@ -179,7 +217,7 @@ def test_validation():
     gt_model = 'google/gemini-2.5-pro-exp-03-25:free'  # structured output, but RESOURCE_EXHAUSTED
     # gt_model = 'google/gemini-2.0-flash-lite-preview-02-05:free'  # structured output
 
-    test_emails = get_test_emails(100)
+    test_emails = generate_test_emails(100)
     test_labels = [None for _ in test_emails]
 
     print("\nTesting validation functionality")
@@ -412,5 +450,5 @@ if __name__ == "__main__":
     # test_email_fetching()
     # test_validation()
     # test_moderation()
-    test_scheduler()
-    # test_bot()
+    # test_scheduler()
+    test_bot()

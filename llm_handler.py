@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import time
 import textwrap
 import requests
 from datetime import datetime
@@ -9,9 +10,27 @@ from openai import OpenAI
 import email
 import numpy as np
 from utils import count_words, format_emails
+import tiktoken
 
 load_dotenv()
 
+
+def get_available_models():
+    """Returns a dict of all models and their specs, as provided via API."""
+    try:
+        response = requests.get("https://openrouter.ai/api/v1/models")
+        data = response.json()['data']
+    except Exception as e:
+        print(f"Error in get_available_models: {e}")
+        try:
+            print(json.dumps(response.json(), indent=2))
+        except Exception:
+            pass
+    return {model_data['id']: model_data for model_data in data}
+
+
+# Try to get list of available OpenRouter models on module import
+available_models = get_available_models()
 
 models_supporting_structured_output = {
     'google/gemini-2.5-pro-exp-03-25:free',
@@ -35,9 +54,77 @@ class LLMHandler:
             "Content-Type": "application/json",
             "HTTP-Referer": "https://github.com/yourusername/email-bot",
         }
-        #self.model_id = 'mistralai/mistral-7b-instruct'  # $0.03/M in, $0.055/M out
-        self.model_id = "mistralai/mistral-small-24b-instruct-2501:free"  # Free model
+        self.model_id = 'mistralai/mistral-7b-instruct'  # $0.03/M in, $0.055/M out
+        #self.model_id = "mistralai/mistral-small-24b-instruct-2501:free"  # Free model
         self.llm_timeout = 5  # response timeout in seconds
+
+    def get_rate_limits(self):
+        try:
+            response = requests.get(self.openrouter_base_url, headers=self.openrouter_headers)
+            data = response.json()['data']
+            limit = data['limit']
+            print(f'label: {data["label"]}, {data["usage"]}/{data["limit"] or "inf"} credits used {"(free tier)" if data["is_free_tier"] else ""}')
+            print(f'Rate limit: {limit["requests"]} per {limit["interval"]}')
+        except Exception as e:
+            print(f"Error in get_rate_limits: {e}")
+            try:
+                print(json.dumps(response.json(), indent=2))
+            except Exception:
+                pass
+
+    def get_model_pricing(self, model_id=None):
+        """Returns input pricing, output pricing (USD/token)."""
+        # data['architecture']['tokenizer'] values are neither correct not supported by tiktoken
+        model_id = model_id or self.model_id
+        try:
+            data = available_models[model_id]
+            pricing_in = float(data['pricing']['prompt'])
+            pricing_out = float(data['pricing']['completion'])
+        except KeyError as e:
+            print(f"Error: missing pricing data {e} for model {model_id}")
+            return None, None, None
+        return pricing_in, pricing_out
+
+    def get_cost_estimate(self, model_id=None, prompts=[], output=''):
+        """Returns a quick estimate of # input tokens, # output tokens, and total cost.
+
+        The real numbers differ because native tokenizer is not known and
+        Prompt Caching is not taken into account.
+        """
+        model_id = model_id or self.model_id
+        tokenizer = "gpt-4o"  # native tokenizer is usually not available
+        price_in, price_out = self.get_model_pricing(model_id)
+        try:
+            encoding = tiktoken.encoding_for_model(tokenizer)
+        except Exception as e:
+            print(f"Error in tiktoken encoding: {e}")
+            return 0, 0, 0
+        num_input_tokens = len(encoding.encode("\n".join(prompts)))
+        num_output_tokens = len(encoding.encode(output))
+        cost = num_input_tokens * price_in + num_output_tokens * price_out
+        return num_input_tokens, num_output_tokens, cost
+
+    def get_cost(self, generation_id):
+        """Returns real num_input_tokens, num_output_tokens, cost.
+
+        Slower: has to wait for OpenRouter usage database to update.
+        """
+        cost = 0
+        # Wait a sec for database to receive the generation data
+        time.sleep(1)
+        try:
+            generation = requests.get(f'https://openrouter.ai/api/v1/generation',
+                                      headers=self.openrouter_headers,
+                                      params={"id": generation_id})
+            data = generation.json()["data"]
+            num_input_tokens = data.get("native_tokens_prompt", data.get("tokens_prompt", 0))
+            num_output_tokens = data.get("native_tokens_completion", data.get("tokens_completion", 0))
+            cost = data.get("total_cost", data.get("usage", 0))
+        except Exception as e:
+            print(f"Error in get_cost: {e}")
+            print(json.dumps(generation.json(), indent=2))
+            return 0, 0, 0
+        return num_input_tokens, num_output_tokens, cost
 
     def validate_email(self, email_sender, email_subject, email_body, model_id=None, subject_cutoff=50, body_cutoff=500):
         """Identify spam/DoS using a free or cheap OpenRouter LLM.
@@ -226,7 +313,7 @@ class LLMHandler:
 
         # Create the user prompt with the email history
         email_history = format_emails(emails, style='json', bot_address=bot_address)
-        now = now or datetime.now()
+        now = now or datetime.now().astimezone()
         user_prompt = (
             "Here is the email conversation history:\n"
             f"{email_history}\n"
@@ -372,7 +459,7 @@ class LLMHandler:
         system_prompt = """
             You support an AI assistant that plays the role of an accountability partner for a human user.
             Your task is to help the assistant with sending responses to the user timely and schedule
-            reminder messages when the user has commited to check-in with the assistant but is overdue.
+            reminder messages when the user has committed to check-in with the assistant but is overdue.
 
             Analyze the conversation regarding scheduling and commitments and predict:
             1. Who might send the next message, user or assistant?
@@ -380,17 +467,17 @@ class LLMHandler:
 
             Also analyze the last user message carefully: If the user expresses any doubt,
             asks a question, or simply needs more advice or encouragement,
-            the assistent might respond again to address those concerns.
+            the assistant might respond again to address those concerns.
 
             Only if the user gives the impression that he/she wants to end the conversation for now,
-            assume a scheduled response by the assistant or user when they intent to check in again.
+            assume a scheduled response by the assistant or user when they intend to check in again.
 
             Return your predictions in JSON format with these fields:
             - analysis (str): summarize questions (implicit or explicit) from the last message and explain who will respond next and with what intent
             - assistant_is_next (boolean): true if the assistant might send the next message, false otherwise
             - date (str): date and time of next expected message in email (RFC 2822) format
 
-            Only return valid JSON with these two fields and no additional text. Here are some examples, complete the last one:
+            Only return valid JSON with these three fields and no additional text. Here are some examples, complete the last one:
 
             <Input>
             From: user
@@ -438,19 +525,7 @@ class LLMHandler:
             """
         system_prompt = textwrap.dedent(system_prompt)
 
-        # Deterministic checks
-        if len(emails) == 0:
-            print("ERROR: empty list of emails")
-            return dict(error='ERROR: empty list of emails')
-        if emails[-1].get("From", "Unknown") == bot_address:
-            # Don't respond to self
-            return dict(reasoning='deterministic', response_is_due=False, probability=0.0)
-        if (len(emails) == 1) and (emails[0].get("From", "Unknown") != bot_address):
-            # Always respond to first user mail
-            return dict(reasoning='deterministic', response_is_due=True, probability=1.0)
-
         # Create the user prompt with all email messages in human-readable format
-
         user_prompt = format_emails(emails, style="human", bot_address=bot_address)
 
         # "analysis": auxiliary task: allows non-reasoning LLMs to think, used only for debugging
@@ -503,6 +578,7 @@ class LLMHandler:
         if DEBUG:
             return {'reasoning': 'DEBUG', 'response_is_due': False, 'probability': 0.5}  # Skip LLM call
 
+        # OpenRouter request
         try:
             response = requests.post(
                 self.openrouter_base_url,
@@ -510,52 +586,66 @@ class LLMHandler:
                 json=openrouter_json,
                 timeout=self.llm_timeout
             )
-
-            if response.status_code == 200:
-                if "choices" not in response.json():
-                    # Handle errors from LLM provider
-                    if 'error' in response.json():
-                        error = response.json()['error']
-                        print(error['message'])
-                        if 'metadata' in error and 'raw' in error['metadata']:
-                            print(error['metadata']['raw'])
-                    else:
-                        print(response.json())
-                    return dict(error=f"Error: {response.status_code} - {response.text}")
-                content = response.json()["choices"][0]["message"]["content"].strip()
-
-                # Parse the JSON response
-                try:
-                    result = json.loads(content)
-                    # Validate the response has the required fields
-                    if "assistant_is_next" in result and "date" in result:
-                        return self._evaluate_output(result, now)
-                    else:
-                        return dict(error="Invalid response format from LLM")
-                except json.JSONDecodeError:
-                    # If the response isn't valid JSON, try to extract it using regex
-                    print("WARNING: LLM did not return JSON, trying with regex...")
-                    assistant_is_next_pattern = r'"assistant_is_next"\s*:\s*(true|false)'
-                    date_pattern = r'"date"\s*:\s*"([^"]+)"'
-
-                    assistant_match = re.search(assistant_is_next_pattern, content, re.IGNORECASE)
-                    date_match = re.search(date_pattern, content)
-
-                    if assistant_match and date_match:
-                        result = {
-                            "assistant_is_next": assistant_match.group(1).lower() == "true",
-                            "date": date_match.group(1),
-                        }
-                        return self._evaluate_output(result, now)
-                    else:
-                        print("ERROR: Also regex failed to match LLM response:")
-                        print(textwrap.indent(content, '    '))
-                        return dict(error="Failed to parse LLM response")
-            else:
-                return dict(error=f"Error: {response.status_code} - {response.text}")
-
         except Exception as e:
-            return dict(error=f"Error: {str(e)}")
+            return dict(error=f"OpenRouter Error: {str(e)}")
+
+        # Handle Errors
+        if response.status_code != 200:
+            return dict(error=f"Error: {response.status_code} - {response.text}")
+
+        if "choices" not in response.json():
+            # Handle errors from LLM provider
+            if 'error' in response.json():
+                error = response.json()['error']
+                print(error['message'] if 'message' in error else error)
+                if 'metadata' in error and 'raw' in error['metadata']:
+                    print(error['metadata']['raw'])
+            else:
+                print(response.json())
+            return dict(error=f"Error: {response.status_code} - {response.text}")
+
+        try:
+            content = response.json()["choices"][0]["message"]["content"].strip()
+        except KeyError as e:
+            print(f"Error: no message/content found in LLM response {response.json()["choices"][0]}")
+            return dict(error=f"Error: {e}")
+
+        # Count input/output tokens, calculate LLM cost
+        num_input_tokens, num_output_tokens, cost = self.get_cost_estimate(model_id, [system_prompt, user_prompt], content)
+        print(f"Tokens in: {num_input_tokens}, out: {num_output_tokens}, total cost: (USD) {cost:.6f} (estimate)")
+        generation_id = response.json().get("id", None)
+        if generation_id:
+            num_input_tokens, num_output_tokens, cost = self.get_cost(generation_id)
+            print(f"Tokens in: {num_input_tokens}, out: {num_output_tokens}, total cost: (USD) {cost:.6f} (real)")
+
+        # Parse the JSON structured output
+        try:
+            result = json.loads(content)
+            # Validate the response has the required fields
+            if "assistant_is_next" in result and "date" in result:
+                return self._evaluate_output(result, now)
+            else:
+                return dict(error="Invalid response format from LLM")
+
+        except json.JSONDecodeError:
+            # If the response isn't valid JSON, try to extract it using regex
+            print("WARNING: LLM did not return JSON, trying with regex...")
+            assistant_is_next_pattern = r'"assistant_is_next"\s*:\s*(true|false)'
+            date_pattern = r'"date"\s*:\s*"([^"]+)"'
+
+            assistant_match = re.search(assistant_is_next_pattern, content, re.IGNORECASE)
+            date_match = re.search(date_pattern, content)
+
+            if assistant_match and date_match:
+                result = {
+                    "assistant_is_next": assistant_match.group(1).lower() == "true",
+                    "date": date_match.group(1),
+                }
+                return self._evaluate_output(result, now)
+            else:
+                print("ERROR: Also regex failed to match LLM response:")
+                print(textwrap.indent(content, '    '))
+                return dict(error="Failed to parse LLM response")
 
     def _evaluate_output(self, result, now=None):
         """
@@ -566,9 +656,9 @@ class LLMHandler:
             now (datetime, optional): Current datetime. Defaults to datetime.now().
 
         Returns:
-            dict: Dictionary with 'response_is_due', 'probability', and optional 'error' fields
+            dict: Dictionary with 'response_is_due', 'probability', 'scheduled_for', and optional 'error' fields
         """
-        now = now or datetime.now()
+        now = now or datetime.now().astimezone()
 
         try:
             analysis = result.get("analysis", "None")
@@ -588,6 +678,11 @@ class LLMHandler:
                 except (ValueError, ImportError):
                     return dict(error="Invalid date format")
 
+            # If the parsed date is naive, make it aware using the local timezone
+            if predicted_date.tzinfo is None:
+                print("adding system timezone to predicted_date")
+                predicted_date = predicted_date.replace(tzinfo=now.tzinfo)
+
             # DEBUG output
             print(f"\nFields in result: {list(result.keys())}")
             print(f"Analysis: {analysis}")
@@ -603,7 +698,7 @@ class LLMHandler:
                 return {"response_is_due": True, "probability": 1.0}
             else:
                 print(f"Deterministic logic: min_ahead ({min_ahead}) + patience ({patience}) > 0, reponse is not due.")  # DEBUG
-                return {"response_is_due": False, "probability": 0.0}
+                return {"response_is_due": False, "probability": 0.0, "scheduled_for": predicted_date}
 
         except Exception as e:
             return dict(error=f"Error validating output: {str(e)}")
@@ -660,8 +755,8 @@ class LLMHandler:
         except Exception as e:
             return False, f"Error during moderation: {str(e)}"
 
-    def generate_response(self, email_content, subject, sender_name):
-        """Generate an intelligent response using OpenRouter's free LLM."""
+    def generate_response(self, user_email_address, bot_address, email_subject, emails):
+        """Generate a chat completion with the role of an Accountability Partner."""
         system_prompt = """You are an accountability partner bot that helps users achieve their goals through email communication.
         Your responses should be:
         1. Encouraging and supportive
@@ -669,16 +764,13 @@ class LLMHandler:
         3. Professional but friendly
         4. Brief and concise
         5. Action-oriented when appropriate
-        
+
         If the email is a "start" message, welcome the user and acknowledge their goal.
         If it's an update, provide encouragement and ask about next steps or challenges.
         """
 
-        user_prompt = f"""Email from {sender_name}:
-        Subject: {subject}
-        Content: {email_content}
-        
-        Please provide a supportive response that helps them stay accountable to their goals."""
+        messages = [{"role": "system", "content": system_prompt}]
+        messages.extend(format_emails(emails, style='chat'))
 
         try:
             response = requests.post(
@@ -686,19 +778,17 @@ class LLMHandler:
                 headers=self.openrouter_headers,
                 json={
                     "model": "mistralai/mistral-7b-instruct",  # Free model
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
+                    "messages": messages,
                     "temperature": 0.7,  # Balanced between creativity and consistency
                 },
                 timeout=self.llm_timeout
             )
 
             if response.status_code == 200:
-                return response.json()["choices"][0]["message"]["content"].strip()
+                content = response.json()["choices"][0]["message"]["content"].strip()
+                return content
             else:
-                return f"Error generating response: {response.status_code} - {response.text}"
+                print(f"Error generating response: {response.status_code} - {response.text}")
 
         except Exception as e:
-            return f"Error generating response: {str(e)}"
+            print(f"Error generating response: {str(e)}")

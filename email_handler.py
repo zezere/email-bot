@@ -3,7 +3,6 @@ import imaplib
 import email
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from datetime import datetime
 import os
 from dotenv import load_dotenv
 
@@ -16,6 +15,9 @@ class EmailHandler:
         self.password = os.getenv("EMAIL_PASSWORD")
         self.imap_server = "imap.zone.eu"
         self.smtp_server = "smtp.zone.eu"
+        # Fail early if no mails can be send to users and admins
+        assert self.email and self.password, ('Error (fatal) in EmailHandler: '
+                                              'email/password not configured.')
 
     def send_email(self, to_email, subject, body):
         msg = MIMEMultipart()
