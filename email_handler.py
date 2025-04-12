@@ -5,9 +5,10 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import os
 from dotenv import load_dotenv
+from pathlib import Path
 
-load_dotenv()
-
+env_path = Path('.') / '.env'
+load_dotenv(dotenv_path=env_path, verbose=True)
 
 class EmailHandler:
     def __init__(self):
