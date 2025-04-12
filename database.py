@@ -2,7 +2,7 @@
 # - save_email: handle new users
 # - email_exists: check also moderation database
 # - new function save_moderation: store moderated emails in extra database,
-#   send dev-mails if not handled automatically
+# - send dev-mails if not handled automatically
 # - test new function get_all_schedules()
 # - test new function get_emails()
 
@@ -10,88 +10,47 @@ import sqlite3
 from pathlib import Path
 from email.message import EmailMessage
 
-DB_PATH = Path("data/apai.db")
+DB_PATH = Path("data/acp.db")
 
 
 def init_db():
     DB_PATH.parent.mkdir(exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-
-    c.execute(
+    
+    execute_sql(
         """
         CREATE TABLE IF NOT EXISTS users (
-            email TEXT PRIMARY KEY,
-            goal TEXT,
-            last_contact TIMESTAMP,
-            status TEXT
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email_address TEXT NOT NULL UNIQUE,
+            name TEXT
         )
-    """
-    )
-
-    c.execute(
         """
-        CREATE TABLE IF NOT EXISTS emails (
-            message_id TEXT PRIMARY KEY,
-            sender_name TEXT,
-            sender_email TEXT,
-            subject TEXT,
-            body TEXT,
-            sent_at TIMESTAMP,
-            is_appropriate BOOLEAN,
-            moderation_reason TEXT
-        )
-    """
     )
 
-    c.execute(
+    execute_sql(
         """
         CREATE TABLE IF NOT EXISTS messages (
-            message_id TEXT PRIMARY KEY,
-            timestamp TIMESTAMP,
-            from_email_address TEXT,
-            to_email_address TEXT,
+            message_id TEXT PRIMARY KEY NOT NULL UNIQUE,
+            timestamp TEXT NOT NULL, -- SQLite does not support TIMESTAMP or DATES type
+            from_email_address TEXT NOT NULL,
+            to_email_address TEXT NOT NULL,
             email_subject TEXT,
             email_body TEXT,
-            email_sent BOOLEAN
+            email_sent INTEGER NOT NULL DEFAULT 0 -- SQLite does not support BOOLEAN type
         )
-    """
+        """
     )
 
-    c.execute(
+    execute_sql(
         """
         CREATE TABLE IF NOT EXISTS schedules (
             user_email_address TEXT,
             email_subject TEXT,
-            scheduled_for TIMESTAMP,
-            reminder_sent BOOLEAN,
+            scheduled_for TEXT NOT NULL, -- SQLite does not support TIMESTAMP or DATES type
+            reminder_sent INTEGER NOT NULL DEFAULT 0, -- SQLite does not support BOOLEAN type
             PRIMARY KEY (user_email_address, email_subject)
         )
-    """
+        """
     )
-
-    conn.commit()
-    conn.close()
-
-
-def get_user(email):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT * FROM users WHERE email = ?", (email,))
-    user = c.fetchone()
-    conn.close()
-    return user
-
-
-def add_user(email, goal):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute(
-        "INSERT INTO users (email, goal, status) VALUES (?, ?, ?)",
-        (email, goal, "active"),
-    )
-    conn.commit()
-    conn.close()
 
 
 def save_email(
@@ -99,21 +58,20 @@ def save_email(
     timestamp,
     from_email_address,
     to_email_address,
-    email_subject,
-    email_body,
+    email_subject="",
+    email_body="",
     email_sent=False,
 ):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute(
-        """
+    sql = """
         INSERT INTO messages (
             message_id, timestamp, from_email_address, to_email_address,
             email_subject, email_body, email_sent
         )
         VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
+    """
+    execute_sql(
+        sql,
+        parameters=(
             message_id,
             timestamp,
             from_email_address,
@@ -123,21 +81,6 @@ def save_email(
             email_sent,
         ),
     )
-    conn.commit()
-    conn.close()
-
-
-def save_moderation(
-    message_id,
-    timestamp,
-    sender_name,
-    from_email_address,
-    to_email_address,
-    email_subject,
-    email_body,
-    moderation_reason,
-):
-    pass
 
 
 def email_exists(message_id):
@@ -229,3 +172,50 @@ def set_schedule(user_email_address, email_subject, scheduled_for):
 
     conn.commit()
     conn.close()
+
+
+def execute_sql(sql, parameters=None, fetch=None):
+    """Execute SQL statement and handle database connection.
+    
+    Args:
+        sql (str): SQL statement to execute
+        parameters (tuple, optional): Parameters for SQL statement
+        fetch (str, optional): Type of fetch operation: 'one', 'all', or None
+    
+    Returns:
+        Depends on fetch parameter:
+        - 'one': Returns single row
+        - 'all': Returns all rows
+        - None: Returns None (for INSERT, UPDATE, DELETE operations)
+    """
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        try:
+            c = conn.cursor()
+            if parameters:
+                c.execute(sql, parameters)
+            else:
+                c.execute(sql)
+                
+            if fetch == 'one':
+                result = c.fetchone()
+            elif fetch == 'all':
+                result = c.fetchall()
+            else:
+                result = None
+                
+            conn.commit()
+            return result
+        except sqlite3.Error as e:
+            print(f"Database error: {str(e)}")
+            print(f"Failed SQL: {sql}")
+            if parameters:
+                print(f"Parameters: {parameters}")
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    except sqlite3.Error as e:
+        print(f"Connection error: {str(e)}")
+        print(f"Database path: {DB_PATH}")
+        raise
