@@ -198,7 +198,7 @@ class Bot:
                       "to active_conversations.")
             else:
                 scheduled_for = result['scheduled_for']
-                set_schedule(user_email_address, email_subject, scheduled_for)
+                set_schedule(user_email_address, email_subject, scheduled_for, 0)
                 print(f"Result: response is NOT DUE for ({user_email_address}, '{email_subject}'), "
                       f"schedule set for {scheduled_for.isoformat()}")
 
