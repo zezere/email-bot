@@ -9,6 +9,8 @@
 import sqlite3
 from pathlib import Path
 from email.message import EmailMessage
+from email.utils import formatdate
+from datetime import datetime
 
 DB_PATH = Path("data/apai.db")
 
@@ -143,7 +145,7 @@ def save_moderation(
 def email_exists(message_id):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT 1 FROM emails WHERE message_id = ?", (message_id,))
+    c.execute("SELECT 1 FROM messages WHERE message_id = ?", (message_id,))
     exists = c.fetchone() is not None
     conn.close()
     return exists
@@ -164,7 +166,8 @@ def get_all_schedules():
     """)
     schedules = []
     for row in c.fetchall():
-        schedules.append([row[0], row[1], row[2], bool(row[3])])
+        dt = datetime.fromisoformat(row[2])
+        schedules.append([row[0], row[1], dt, bool(row[3])])
     conn.close()
     return schedules
 
@@ -199,7 +202,8 @@ def get_emails(user_email_address, email_subject):
         msg = EmailMessage()
         msg['From'] = row[0]
         msg['Subject'] = row[2]
-        msg['Date'] = row[4]
+        timestamp = datetime.fromisoformat(row[4])
+        msg['Date'] = formatdate(timestamp.timestamp(), localtime=True)
         msg.set_content(row[3])
         emails.append(msg)
 

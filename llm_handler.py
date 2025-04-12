@@ -99,6 +99,7 @@ class LLMHandler:
         except Exception as e:
             print(f"Error in tiktoken encoding: {e}")
             return 0, 0, 0
+        prompts = [item['content'] if isinstance(item, dict) else str(item) for item in prompts]
         num_input_tokens = len(encoding.encode("\n".join(prompts)))
         num_output_tokens = len(encoding.encode(output))
         cost = num_input_tokens * price_in + num_output_tokens * price_out
@@ -125,6 +126,15 @@ class LLMHandler:
             print(json.dumps(generation.json(), indent=2))
             return 0, 0, 0
         return num_input_tokens, num_output_tokens, cost
+
+    def show_usage(self, model_id, prompts, output, response):
+        """Count input/output tokens, calculate LLM cost."""
+        num_input_tokens, num_output_tokens, cost = self.get_cost_estimate(model_id, prompts, output)
+        print(f"Tokens in: {num_input_tokens}, out: {num_output_tokens}, total cost: (USD) {cost:.6f} (estimate)")
+        generation_id = response.json().get("id", None)
+        if generation_id:
+            num_input_tokens, num_output_tokens, cost = self.get_cost(generation_id)
+            print(f"Tokens in: {num_input_tokens}, out: {num_output_tokens}, total cost: (USD) {cost:.6f} (real)")
 
     def validate_email(self, email_sender, email_subject, email_body, model_id=None, subject_cutoff=50, body_cutoff=500):
         """Identify spam/DoS using a free or cheap OpenRouter LLM.
@@ -610,13 +620,7 @@ class LLMHandler:
             print(f"Error: no message/content found in LLM response {response.json()["choices"][0]}")
             return dict(error=f"Error: {e}")
 
-        # Count input/output tokens, calculate LLM cost
-        num_input_tokens, num_output_tokens, cost = self.get_cost_estimate(model_id, [system_prompt, user_prompt], content)
-        print(f"Tokens in: {num_input_tokens}, out: {num_output_tokens}, total cost: (USD) {cost:.6f} (estimate)")
-        generation_id = response.json().get("id", None)
-        if generation_id:
-            num_input_tokens, num_output_tokens, cost = self.get_cost(generation_id)
-            print(f"Tokens in: {num_input_tokens}, out: {num_output_tokens}, total cost: (USD) {cost:.6f} (real)")
+        self.show_usage(model_id, [system_prompt, user_prompt], content, response)
 
         # Parse the JSON structured output
         try:
@@ -755,9 +759,12 @@ class LLMHandler:
         except Exception as e:
             return False, f"Error during moderation: {str(e)}"
 
-    def generate_response(self, user_email_address, bot_address, email_subject, emails):
+    def generate_response(self, emails, bot_address, model_id=None):
         """Generate a chat completion with the role of an Accountability Partner."""
-        system_prompt = """You are an accountability partner bot that helps users achieve their goals through email communication.
+        model_id = model_id or self.model_id
+
+        system_prompt = """
+        You are an accountability partner bot that helps users achieve their goals through email communication.
         Your responses should be:
         1. Encouraging and supportive
         2. Focused on the user's goals and progress
@@ -768,16 +775,26 @@ class LLMHandler:
         If the email is a "start" message, welcome the user and acknowledge their goal.
         If it's an update, provide encouragement and ask about next steps or challenges.
         """
+        system_prompt = textwrap.dedent(system_prompt)
 
         messages = [{"role": "system", "content": system_prompt}]
-        messages.extend(format_emails(emails, style='chat'))
+        chat_formatted_emails = format_emails(emails, style='chat', bot_address=bot_address)
+        for msg in chat_formatted_emails:
+            assert isinstance(msg, dict)
+            assert 'role' in msg
+            assert 'content' in msg
+        messages.extend(chat_formatted_emails)
+
+        print("messages sent to response agent:")
+        for i, msg in enumerate(messages):
+            print(i, msg[:40], "...", msg[-20:])
 
         try:
             response = requests.post(
                 self.openrouter_base_url,
                 headers=self.openrouter_headers,
                 json={
-                    "model": "mistralai/mistral-7b-instruct",  # Free model
+                    "model": model_id,
                     "messages": messages,
                     "temperature": 0.7,  # Balanced between creativity and consistency
                 },
@@ -786,6 +803,7 @@ class LLMHandler:
 
             if response.status_code == 200:
                 content = response.json()["choices"][0]["message"]["content"].strip()
+                self.show_usage(model_id, messages, content, response)
                 return content
             else:
                 print(f"Error generating response: {response.status_code} - {response.text}")

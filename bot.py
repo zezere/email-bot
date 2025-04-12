@@ -1,11 +1,12 @@
 from time import perf_counter
 from datetime import datetime
+import textwrap
 from database import save_email, save_moderation, email_exists, get_all_schedules, get_emails, set_schedule
 from email_handler import EmailHandler
 from llm_handler import LLMHandler
 import email.utils
 from scheduling import ScheduleProcessor, REMINDER_POLICIES, choose_policy
-from utils import is_valid_email_address, get_email_body, get_message_sent_time
+from utils import is_valid_email_address, get_email_body, get_message_sent_time, generate_message_id
 
 
 class Bot:
@@ -20,6 +21,7 @@ class Bot:
     its current state.
     """
     def __init__(self):
+        self.test = False
         self.email_handler = EmailHandler()
         self.email_address = self.email_handler.email  # bot address from .env
         self.llm_handler = LLMHandler()
@@ -43,29 +45,39 @@ class Bot:
             # Extract email information
             from_header = email_msg.get("From", "")
             sender_name, sender_email = email.utils.parseaddr(from_header)
+            to_email_address = email_msg.get("To", "")
             subject = email_msg.get("Subject", "")
             body = get_email_body(email_msg)
             sent_at = get_message_sent_time(email_msg)
 
             # Validate sender_email address
+            print(f"Validating new email {message_id} ({sender_email}, '{subject}', {sent_at.isoformat()})")
             if not is_valid_email_address(sender_email):
-                print(f"Received invalid email address: {sender_email[:50]}")
+                print(f"    invalid email address: {sender_email[:50]}")
                 continue
 
             # Quickly validate and block spam
-            response, reasoning = self.llm_handler.validate_email(sender_email, subject, body)
+            # In test mode, don't validate emails from myself
+            if self.test and (sender_email == self.email_address):
+                response, reasoning = 'pass', 'test email from myself'
+            else:
+                response, reasoning = self.llm_handler.validate_email(sender_email, subject, body)
             if response == "pass":
                 pass
             elif response == "block":
                 print(f"Blocked email {message_id} from {sender_email} (spam)")
                 continue
             else:
-                print("Validation LLM did not follow instructions. Response: "
-                      f"{response}, {reasoning}")
+                print("Validation skipped: LLM did not follow instructions")
+                if self.test:
+                    print(f"Response:\n{response}, {reasoning}\n")
 
             # Moderate the email content
-            is_appropriate, moderation_result = self.llm_handler.moderate_email(body)
-            # is_appropriate = True
+            if self.test:
+                # skip moderation
+                is_appropriate, moderation_result = True, 'APPROPRIATE'
+            else:
+                is_appropriate, moderation_result = self.llm_handler.moderate_email(body)
             if not is_appropriate:
                 print(f"Moderation result for {message_id}: {moderation_result}")
                 save_moderation(
@@ -73,7 +85,7 @@ class Bot:
                     timestamp=sent_at,
                     sender_name=sender_name,
                     from_email_address=sender_email,
-                    to_email_address=self.email_address,
+                    to_email_address=to_email_address or self.email_address,
                     email_subject=subject,
                     email_body=body,
                     email_sent=True,
@@ -81,8 +93,26 @@ class Bot:
                 print(f"Saved new email from {sender_email} ({subject}). "
                       f"Delay: {(datetime.now().astimezone() - sent_at).seconds / 60:.1f} min")
 
-            # schedule_response agent needs to decide: respond or set/update schedule?
-            self.ask_agent.add((sender_email, subject))
+            # Save email information to database
+            save_email(
+                message_id=message_id,
+                timestamp=sent_at,
+                from_email_address=sender_email,
+                to_email_address=to_email_address or self.email_address,
+                email_subject=subject,
+                email_body=body,
+                email_sent=True,
+            )
+            print(f"Saved new email: {message_id} from {sender_email} ({subject})")
+
+            # Agent needs to decide: respond or set/update schedule?
+            if sender_email == self.email_address:
+                if not self.test:
+                    print(f"Error: received email from myself:\n{email_msg}")
+            else:
+                if self.test:
+                    print(f"sender: {sender_email} is not bot: {self.email_address}, adding to ask_agent.")
+                self.ask_agent.add((sender_email, subject))
 
         print(f"Processing new emails completed in {perf_counter() - start_time:.1f} sec.")
 
@@ -94,29 +124,44 @@ class Bot:
         processor = ScheduleProcessor()
 
         for schedule in schedules:
+            # Gather relevant information
             user, subject, due_time, reminder_sent = schedule
             just_got_user_mail = (user, subject) in self.active_conversations
             messages = get_emails(user, subject)
+            if not messages:
+                print(f"Error: conversation ({user, subject}) has schedule but no messages (skipping)")
+                continue
             now = datetime.now().astimezone()
+
+            # For policy debugging: show relevant information
+            print(f"Trying up to {len(REMINDER_POLICIES)} policies in the following context:")
+            print(f"    schedule: {schedule}")
+            print(f"    last message:")
+            print(textwrap.indent(messages[-1].as_string(), ' ' * 8))
+            print(f"    current time: {now.isoformat()}\n")
 
             # Variant (A): try all policies, apply the first that works
             for reminder_policy in REMINDER_POLICIES:
                 processor.set_policy(reminder_policy)
                 try:
-                    response_is_due = processor.process_schedule(schedule, just_got_user_mail,
-                                                                 messages, now)
-                    print(f"reminder_policy {reminder_policy.name} was successful.")
+                    response_is_due = processor.process_schedule(schedule, 
+                                                                 just_got_user_mail,
+                                                                 messages, 
+                                                                 now)
+                    print(f"{reminder_policy.name} was successful.")
                     break
                 except Exception as e:
-                    print(f"reminder_policy {reminder_policy.name} failed with {e}")
-                    print(f"    schedule: {schedule}")
-                    print(f"    last message: {messages[-1]}")
+                    print(f"{reminder_policy.name} failed: {e}")
 
             # Variant (B): use a sophisticated choose_policy function
             # reminder_policy = choose_policy(schedule, just_got_user_mail, messages, now)
             # processor.set_policy(reminder_policy)
             # response_is_due = processor.process_schedule(schedule, just_got_user_mail,
             #                                              messages, now)
+
+            if self.test:
+                assert isinstance(user, str)  # DEBUG
+                assert user != self.email_address, f'user from schedule was bot!!!'  # DEBUG
 
             if response_is_due is True:
                 # Policy says that a response is due right now
@@ -139,6 +184,10 @@ class Bot:
             result = llm_handler.schedule_response_v2(messages, bot_address=self.email_address,
                                                       now=None, verbose=False, DEBUG=False)
 
+            if self.test:
+                assert isinstance(user_email_address, str)  # DEBUG
+                assert user_email_address != self.email_address, f'user_email_address from ask_agent was bot!!!'  # DEBUG
+
             if 'error' in result:
                 print(f"schedule_response agent failed with {result['error']} "
                       f"({user_email_address}, '{email_subject}')")
@@ -146,13 +195,13 @@ class Bot:
                 self.active_conversations.add((user_email_address, email_subject))
             elif result['response_is_due']:
                 self.active_conversations.add((user_email_address, email_subject))
-                print("result: response IS due, added conv to active_conversations "
-                      f"({user_email_address}, '{email_subject}').")
+                print(f"Result: response is DUE, added  ({user_email_address}, '{email_subject}') "
+                      "to active_conversations.")
             else:
-                print(f"result: response is not due ({user_email_address}, '{email_subject}')")
-                print(result)
-                print(", setting schedule...")
-                set_schedule(user_email_address, email_subject, result['scheduled_for'])
+                scheduled_for = result['scheduled_for']
+                set_schedule(user_email_address, email_subject, scheduled_for)
+                print(f"Result: response is NOT DUE for ({user_email_address}, '{email_subject}'), "
+                      f"schedule set for {scheduled_for.isoformat()}")
 
             # Future: go full probabilistic
             if hasattr(self, 'chattiness') and result['probability'] > (1 - self.chattiness):
@@ -165,8 +214,7 @@ class Bot:
         for user_email_address, email_subject in self.active_conversations:
             messages = get_emails(user_email_address, email_subject)
 
-            email_body = llm_handler.generate_response(
-                user_email_address, self.email_address, email_subject, messages)
+            email_body = llm_handler.generate_response(messages, bot_address=self.email_address)
 
             if not email_body:
                 print(f"generate_response agent failed generating response to "
@@ -179,7 +227,7 @@ class Bot:
             # Save email information to database
             timestamp = datetime.now().astimezone()
             save_email(
-                message_id=f'bot_msg_{timestamp.isoformat()}',
+                message_id=generate_message_id(user_email_address, email_subject, timestamp.isoformat()),
                 timestamp=timestamp,
                 from_email_address=self.email_address,
                 to_email_address=user_email_address,
