@@ -3,15 +3,23 @@ from database import init_db
 from email_handler import EmailHandler
 import email.utils
 from database import save_email, email_exists
-from llm_handler import LLMHandler
 from bot import Bot, get_email_body
 from utils import get_message_sent_time, binary_cross_entropy
 from email.message import EmailMessage
 import random
 import tiktoken
 import numpy as np
+<<<<<<< Updated upstream
 from functools import partial
 import hashlib
+=======
+from llm_handler import (
+    EmailValidator,
+    ResponseScheduler,
+    EmailModerator
+)
+
+>>>>>>> Stashed changes
 
 
 def generate_test_emails(n=3, to='acp@startup.com'):
@@ -162,7 +170,7 @@ def test_email_fetching():
 
     # Create handlers
     email_handler = EmailHandler()
-    llm_handler = LLMHandler()
+    moderator = EmailModerator()
 
     # Fetch emails
     emails = email_handler.check_inbox()
@@ -184,7 +192,7 @@ def test_email_fetching():
         sent_at = email_msg.get("Date", "")
 
         # Moderate the email content
-        is_appropriate, moderation_result = llm_handler.moderate_email(body)
+        is_appropriate, moderation_result = moderator.moderate_email(body)
         print(f"Moderation result for {message_id}: {moderation_result}")
 
         # Save email information to database with moderation results
@@ -202,20 +210,13 @@ def test_email_fetching():
 
 
 def test_validation():
-    """Test validation on normal and malicious emails.
-
-    Tested models:
-    - mistralai/mistral-small-24b-instruct-2501:free
-    - google/gemma-2-9b-it:free  sometimes returns empty response
-    """
+    """Test validation on normal and malicious emails."""
     from bot import is_valid_email_address
     from time import perf_counter, sleep
 
-    llm_handler = LLMHandler()
+    validator = EmailValidator()
     validation_model = 'mistralai/mistral-small-24b-instruct-2501:free'
-    # gt_model = 'deepseek/deepseek-chat-v3-0324:free'  # no structured output
-    gt_model = 'google/gemini-2.5-pro-exp-03-25:free'  # structured output, but RESOURCE_EXHAUSTED
-    # gt_model = 'google/gemini-2.0-flash-lite-preview-02-05:free'  # structured output
+    gt_model = 'google/gemini-2.5-pro-exp-03-25:free'
 
     test_emails = generate_test_emails(100)
     test_labels = [None for _ in test_emails]
@@ -243,8 +244,8 @@ def test_validation():
         gt_reasoning = ''
         if label is None:
             t0 = perf_counter()
-            label, gt_reasoning = llm_handler.validate_email(sender_email, subject,
-                                                             body, model_id=gt_model)
+            label, gt_reasoning = validator.validate_email(sender_email, subject,
+                                                         body, model_id=gt_model)
             times['gt'].append(perf_counter() - t0)
 
             # Handle rate limits
@@ -252,8 +253,8 @@ def test_validation():
                 print("waiting to pass rate-limit for free models...")
                 sleep(60)
                 t0 = perf_counter()
-                label, gt_reasoning = llm_handler.validate_email(sender_email, subject,
-                                                                 body, model_id=gt_model)
+                label, gt_reasoning = validator.validate_email(sender_email, subject,
+                                                             body, model_id=gt_model)
                 times['gt'].append(perf_counter() - t0)
             elif gt_reasoning == 'wait a day':
                 print("daily rate limit for free models reached, quitting.")
@@ -265,8 +266,8 @@ def test_validation():
 
         # Test
         t0 = perf_counter()
-        response, reasoning = llm_handler.validate_email(sender_email, subject,
-                                                         body, model_id=validation_model)
+        response, reasoning = validator.validate_email(sender_email, subject,
+                                                     body, model_id=validation_model)
         times['valid'].append(perf_counter() - t0)
         if response == label:
             print(f"PASSED validation: {response}")
@@ -294,7 +295,7 @@ def test_scheduler(emails=None, bot_address='acp@startup.com'):
     date/time and a list of past emails from a conversation. Labels are
     generated from conversation time stamps.
     """
-    llm_handler = LLMHandler()
+    scheduler = ResponseScheduler()
     scheduler_model = 'openrouter/quasar-alpha'  # free+cloaked, excels at this task!
     # scheduler_model = 'mistralai/mistral-small-24b-instruct-2501'  #  0.1/0.3 $/M tokens in/out
     # scheduler_model = 'deepseek/deepseek-chat-v3-0324:free'  # no structured output
@@ -323,7 +324,7 @@ def test_scheduler(emails=None, bot_address='acp@startup.com'):
 
     def _validate(llm_handler, message_history, label, model_id, bot_address, current_time,
                   verbose, DEBUG, exit_on_first_mistake=False):
-        prediction = llm_handler.schedule_response_v2(message_history,
+        prediction = scheduler.schedule_response_v2(message_history,
                                                       model_id=model_id,
                                                       bot_address=bot_address,
                                                       now=current_time,
@@ -379,7 +380,7 @@ def test_scheduler(emails=None, bot_address='acp@startup.com'):
                 print(f"Message {i+1} is delayed, testing prediction for msg {i} at various times...")
                 while dt < due_time - timedelta(minutes=90):
                     label = (False, 0.0)
-                    acc, loss, error = _validate(llm_handler, message_history, label, scheduler_model,
+                    acc, loss, error = _validate(scheduler, message_history, label, scheduler_model,
                                                  bot_address, dt, verbose, DEBUG, exit_on_first_mistake)
                     if error:
                         break
@@ -389,7 +390,7 @@ def test_scheduler(emails=None, bot_address='acp@startup.com'):
 
                 dt = due_time + timedelta(minutes=90)
                 label = (True, 1.0)
-                acc, loss, error = _validate(llm_handler, message_history, label, scheduler_model,
+                acc, loss, error = _validate(scheduler, message_history, label, scheduler_model,
                                              bot_address, dt, verbose, DEBUG, exit_on_first_mistake)
                 if error:
                     break
@@ -415,7 +416,7 @@ def test_scheduler(emails=None, bot_address='acp@startup.com'):
 
 def test_moderation():
     """Test the moderation functionality with various types of content."""
-    llm_handler = LLMHandler()
+    moderator = EmailModerator()
 
     # Test cases
     test_cases = [
@@ -440,7 +441,7 @@ def test_moderation():
     for test_case in test_cases:
         print(f"\nTest case: {test_case['description']}")
         print(f"Content: {test_case['content']}")
-        is_appropriate, reason = llm_handler.moderate_email(test_case["content"])
+        is_appropriate, reason = moderator.moderate_email(test_case["content"])
         print(f"Result: {reason}")
         print(f"Appropriate: {is_appropriate}")
         print("-" * 50)
