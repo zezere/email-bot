@@ -132,9 +132,9 @@ def get_emails(user_email_address, email_subject):
 
     # First get the sender name from users table
     c.execute("""
-        SELECT m.from_email_address, u.goal, m.email_subject, m.email_body, m.timestamp
+        SELECT m.from_email_address, m.email_subject, m.email_body, m.timestamp
         FROM messages m
-        LEFT JOIN users u ON m.from_email_address = u.email
+        LEFT JOIN users u ON m.from_email_address = u.email_address
         WHERE (m.from_email_address = ? OR m.to_email_address = ?)
         AND m.email_subject = ?
         ORDER BY m.timestamp
@@ -144,10 +144,10 @@ def get_emails(user_email_address, email_subject):
     for row in c.fetchall():
         msg = EmailMessage()
         msg['From'] = row[0]
-        msg['Subject'] = row[2]
-        timestamp = datetime.fromisoformat(row[4])
+        msg['Subject'] = row[1]
+        timestamp = datetime.fromisoformat(row[3])
         msg['Date'] = formatdate(timestamp.timestamp(), localtime=True)
-        msg.set_content(row[3])
+        msg.set_content(row[2])
         emails.append(msg)
 
     conn.close()
@@ -176,6 +176,11 @@ def set_schedule(user_email_address, email_subject, scheduled_for):
 
     conn.commit()
     conn.close()
+
+
+def get_user_name(user_email_address):
+    """Get user_name from the users table."""
+    return "Dude"
 
 
 def execute_sql(sql, parameters=None, fetch=None):

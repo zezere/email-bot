@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 import email
 import numpy as np
-from utils import count_words, format_emails
+from utils import count_words, format_emails, wrap_indent
 import tiktoken
 
 load_dotenv()
@@ -759,12 +759,14 @@ class LLMHandler:
         except Exception as e:
             return False, f"Error during moderation: {str(e)}"
 
-    def generate_response(self, emails, bot_address, model_id=None):
+    def generate_response(self, emails, bot_address, user_name="User", bot_name="Accountability Partner", model_id=None):
         """Generate a chat completion with the role of an Accountability Partner."""
         model_id = model_id or self.model_id
 
-        system_prompt = """
-        You are an accountability partner bot that helps users achieve their goals through email communication.
+        system_prompt = f"""
+        You are an accountability partner that helps users achieve their goals through email communication.
+        Your name is {bot_name}.
+        Call the user {user_name} or whatever they prefer.
         Your responses should be:
         1. Encouraging and supportive
         2. Focused on the user's goals and progress
@@ -774,6 +776,7 @@ class LLMHandler:
 
         If the email is a "start" message, welcome the user and acknowledge their goal.
         If it's an update, provide encouragement and ask about next steps or challenges.
+        Only write the body text of the email, no headers, no footers, no PS.
         """
         system_prompt = textwrap.dedent(system_prompt)
 
@@ -785,10 +788,12 @@ class LLMHandler:
             assert 'content' in msg
         messages.extend(chat_formatted_emails)
 
-        print("messages sent to response agent:")
+        print("Messages sent to response agent:")
         for i, msg in enumerate(messages):
-            print(i, msg[:40], "...", msg[-20:])
+            print(f'{i:03} {msg["role"]}:')
+            print(wrap_indent(msg["content"], width=80, indentation=8))
 
+        assert 'chat' in self.openrouter_base_url, f'base url not for chat: {self.openrouter_base_url}'
         try:
             response = requests.post(
                 self.openrouter_base_url,

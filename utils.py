@@ -1,8 +1,8 @@
 import re
 import json
-import email
 from datetime import datetime, timezone, timedelta
 import hashlib
+import textwrap
 import numpy as np
 from email.utils import format_datetime, parsedate_tz, parsedate_to_datetime, formatdate
 from email.message import Message  # Used for type hinting
@@ -171,3 +171,42 @@ def get_current_user_time(user_message: Message, now: datetime = None) -> str:
     now_in_user_tz = now_utc.astimezone(user_timezone)
 
     return now_in_user_tz
+
+
+def wrap_indent(text, width, indentation=4):
+    """
+    Indents text using spaces, wraps long lines, and preserves existing newlines.
+
+    Args:
+        text (str): The input text.
+        width (int): The maximum line width (including indentation).
+        indentation (int, optional): The number of spaces to use for indentation.
+                                     Defaults to 4.
+
+    Returns:
+        str: The formatted text.
+    """
+    indent_str = " " * indentation
+
+    # Create a TextWrapper instance
+    wrapper = textwrap.TextWrapper(
+        width=width,
+        initial_indent=indent_str,
+        subsequent_indent=indent_str,
+        replace_whitespace=False,  # preserves existing space/tab sequences within lines   
+        break_long_words=False,  # doesn't break words unless absolutely necessary
+        break_on_hyphens=True
+    )
+
+    # Split the original text into lines based on existing newlines
+    original_lines = text.splitlines()
+
+    # Handle the case of empty input text
+    if not original_lines:
+        return ""
+
+    # Wrap each line individually using the wrapper's fill method
+    processed_lines = [wrapper.fill(line) for line in original_lines]
+
+    # Join the processed lines back together with newlines
+    return "\n".join(processed_lines)

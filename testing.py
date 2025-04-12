@@ -5,7 +5,7 @@ import email.utils
 from database import save_email, email_exists
 from llm_handler import LLMHandler
 from bot import Bot, get_email_body
-from utils import get_message_sent_time, binary_cross_entropy, generate_message_id, datetime_to_rfc
+from utils import get_message_sent_time, binary_cross_entropy, generate_message_id, datetime_to_rfc, wrap_indent
 from email.message import EmailMessage
 import random
 import tiktoken
@@ -112,8 +112,7 @@ def convert_messages_to_emails(topic, num_messages=None, user_address='john.doe@
 
 def fake_send_email(to_email, subject, body):
     print(f"Sending (faked) email to {to_email} ({subject}):")
-    print(body)
-    print('-' * 50)
+    print(wrap_indent(body, width=80, indentation=8))
 
 
 def test_bot():
@@ -129,11 +128,12 @@ def test_bot():
     bot.test = True
     bot.email_handler.email = "testbot@startup.void"
     bot.email_address = bot.email_handler.email
+    bot.name = "Bot, James Bot"
     assert 'test' in bot.email_address, 'use testbot@startup.void for EMAIL in .env when testing!'
 
     bot.email_handler.check_inbox = partial(convert_messages_to_emails,
                                             topic = "Startup Entrepreneurship",
-                                            num_messages = 1,
+                                            num_messages = 11,
                                             bot_address = bot.email_handler.email)
 
     bot.email_handler.send_email = fake_send_email
@@ -157,7 +157,7 @@ def test_bot():
         assert conv[0] != bot.email_address, "only user_email_addresses may appear here!"
     print()
 
-    bot.llm_handler.model_id = 'mistralai/mistral-small-24b-instruct-2501'  # generate_response
+    bot.llm_handler.model_id = 'openrouter/optimus-alpha'  # generate_response
     bot.generate_responses()
 
     print("-" * 50)

@@ -1,7 +1,7 @@
 from time import perf_counter
 from datetime import datetime
 import textwrap
-from database import save_email, save_moderation, email_exists, get_all_schedules, get_emails, set_schedule
+from database import save_email, email_exists, get_all_schedules, get_emails, set_schedule, get_user_name
 from email_handler import EmailHandler
 from llm_handler import LLMHandler
 import email.utils
@@ -24,6 +24,7 @@ class Bot:
         self.test = False
         self.email_handler = EmailHandler()
         self.email_address = self.email_handler.email  # bot address from .env
+        self.name = self.email_address.split('@')
         self.llm_handler = LLMHandler()
         self.active_conversations = set()  # (user_email_address, subject)
         self.ask_agent = set()  # conversations handled by schedule_response agent
@@ -176,13 +177,11 @@ class Bot:
 
     def manage_conversations(self):
         """Let schedule_response agent handle potentially active conversations."""
-        llm_handler = LLMHandler()
-
         for user_email_address, email_subject in self.ask_agent:
             messages = get_emails(user_email_address, email_subject)
 
-            result = llm_handler.schedule_response_v2(messages, bot_address=self.email_address,
-                                                      now=None, verbose=False, DEBUG=False)
+            result = self.llm_handler.schedule_response_v2(messages, bot_address=self.email_address,
+                                                           now=None, verbose=False, DEBUG=False)
 
             if self.test:
                 assert isinstance(user_email_address, str)  # DEBUG
@@ -209,12 +208,14 @@ class Bot:
 
     def generate_responses(self):
         """Reply in all active_conversations."""
-        llm_handler = LLMHandler()
-
         for user_email_address, email_subject in self.active_conversations:
             messages = get_emails(user_email_address, email_subject)
+            user_name = get_user_name(user_email_address)
 
-            email_body = llm_handler.generate_response(messages, bot_address=self.email_address)
+            email_body = self.llm_handler.generate_response(messages,
+                                                            bot_address=self.email_address,
+                                                            user_name=user_name,
+                                                            bot_name=self.name)
 
             if not email_body:
                 print(f"generate_response agent failed generating response to "
