@@ -11,8 +11,56 @@ from pathlib import Path
 from email.message import EmailMessage
 from email.utils import formatdate
 from datetime import datetime
+from uuid import uuid4
 
 DB_PATH = Path("data/acp.db")
+
+
+def execute_sql(sql, parameters=None, fetch=None):
+    """Execute SQL statement and handle database connection.
+    
+    Args:
+        sql (str): SQL statement to execute
+        parameters (tuple, optional): Parameters for SQL statement
+        fetch (str, optional): Type of fetch operation: 'one', 'all', or None
+    
+    Returns:
+        Depends on fetch parameter:
+        - 'one': Returns single row
+        - 'all': Returns all rows
+        - None: Returns None (for INSERT, UPDATE, DELETE operations)
+    """
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        try:
+            c = conn.cursor()
+            if parameters:
+                c.execute(sql, parameters)
+            else:
+                c.execute(sql)
+                
+            if fetch == 'one':
+                result = c.fetchone()
+            elif fetch == 'all':
+                result = c.fetchall()
+            else:
+                result = None
+                
+            conn.commit()
+            return result
+        except sqlite3.Error as e:
+            print(f"Database error: {str(e)}")
+            print(f"Failed SQL: {sql}")
+            if parameters:
+                print(f"Parameters: {parameters}")
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    except sqlite3.Error as e:
+        print(f"Connection error: {str(e)}")
+        print(f"Database path: {DB_PATH}")
+        raise
 
 
 def init_db():
@@ -55,6 +103,119 @@ def init_db():
     )
 
 
+# For use by email handler
+def add_email_to_db(
+    message_id,
+    timestamp,
+    from_email_address,
+    to_email_address,
+    email_subject="",
+    email_body=""
+):
+    """Save data of one email to database.
+    Meant to be used by email handler.
+    
+    Args:
+        message_id: Message-ID from email metadata
+        timestamp: Received timestamp from email
+        from_email_address: Sender email
+        to_email_address: Recipient email
+        email_subject: Subject line
+        email_body: Email content (in plain text)
+    
+    Returns:
+        bool: True if email was saved successfully
+    
+    Raises:
+        ValueError: If required fields are missing or invalid
+    """
+    # Validate required fields
+    if not message_id or not timestamp or not from_email_address or not to_email_address:
+        raise ValueError("Missing required fields: message_id, timestamp, from_email_address, and to_email_address are required")
+
+    try:
+        sql = """
+            INSERT INTO messages (
+                message_id, timestamp, from_email_address, to_email_address,
+                email_subject, email_body, email_sent
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """
+        execute_sql(
+            sql,
+            parameters=(
+                message_id, timestamp, from_email_address, to_email_address,
+                email_subject, email_body, True
+            )
+        )
+        return True
+    except sqlite3.Error:
+        # execute_sql already prints the error details
+        return False
+
+
+# For use by LLM handler
+def add_message_to_db(
+    from_email_address,
+    to_email_address,
+    email_subject="",
+    email_body="",
+):
+    """Add new message to database.
+    Meant to be used for LLM-generated messages.
+    Generates uuid for message_id and current timestamp for timestamp.
+    Sets email_sent to False.
+    
+    Args:
+        from_email_address: Sender email
+        to_email_address: Recipient email
+        email_subject: Subject line
+        email_body: Email content (in plain text)
+    
+    Returns:
+        str or False: Generated message_id if successful, False if failed
+    
+    Raises:
+        ValueError: If required fields are missing or invalid
+    """
+    # Validate required fields
+    if not from_email_address or not to_email_address:
+        raise ValueError("Missing required fields: from_email_address and to_email_address are required")
+
+    try:
+        message_id = f"out_{uuid4()}"
+        sql = """
+            INSERT INTO messages (
+                message_id,
+                timestamp,
+                from_email_address,
+                to_email_address,
+                email_subject,
+                email_body,
+                email_sent
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """
+        execute_sql(
+            sql,
+            parameters=(
+                message_id,
+                datetime.now().isoformat(),
+                from_email_address,
+                to_email_address,
+                email_subject,
+                email_body,
+                False
+            )
+        )
+        return message_id
+    except sqlite3.Error:
+        # execute_sql already prints the error details
+        return False
+
+
+# NOTE: DEPRECATE LATER. This function will be replaced by separate functions
+# for adding emails from email server and LLM-generated emails.
 def save_email(
     message_id,
     timestamp,
@@ -190,48 +351,3 @@ def get_user_name(user_email_address):
     return result[0] if result else "Dude"
 
 
-def execute_sql(sql, parameters=None, fetch=None):
-    """Execute SQL statement and handle database connection.
-    
-    Args:
-        sql (str): SQL statement to execute
-        parameters (tuple, optional): Parameters for SQL statement
-        fetch (str, optional): Type of fetch operation: 'one', 'all', or None
-    
-    Returns:
-        Depends on fetch parameter:
-        - 'one': Returns single row
-        - 'all': Returns all rows
-        - None: Returns None (for INSERT, UPDATE, DELETE operations)
-    """
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        try:
-            c = conn.cursor()
-            if parameters:
-                c.execute(sql, parameters)
-            else:
-                c.execute(sql)
-                
-            if fetch == 'one':
-                result = c.fetchone()
-            elif fetch == 'all':
-                result = c.fetchall()
-            else:
-                result = None
-                
-            conn.commit()
-            return result
-        except sqlite3.Error as e:
-            print(f"Database error: {str(e)}")
-            print(f"Failed SQL: {sql}")
-            if parameters:
-                print(f"Parameters: {parameters}")
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
-    except sqlite3.Error as e:
-        print(f"Connection error: {str(e)}")
-        print(f"Database path: {DB_PATH}")
-        raise
