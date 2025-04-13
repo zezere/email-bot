@@ -9,6 +9,8 @@
 import sqlite3
 from pathlib import Path
 from email.message import EmailMessage
+from email.utils import formatdate
+from datetime import datetime
 
 DB_PATH = Path("data/acp.db")
 
@@ -84,12 +86,9 @@ def save_email(
 
 
 def email_exists(message_id):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT 1 FROM emails WHERE message_id = ?", (message_id,))
-    exists = c.fetchone() is not None
-    conn.close()
-    return exists
+    sql = "SELECT 1 FROM messages WHERE message_id = ?"
+    result = execute_sql(sql, parameters=(message_id,), fetch='one')
+    return result is not None
 
 
 def get_all_schedules():
@@ -99,16 +98,15 @@ def get_all_schedules():
         timestamp (datetime),
         reminder_sent (bool).
     """
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("""
+    sql = """
         SELECT user_email_address, email_subject, scheduled_for, reminder_sent
         FROM schedules
-    """)
+    """
+    rows = execute_sql(sql, fetch='all')
     schedules = []
-    for row in c.fetchall():
-        schedules.append([row[0], row[1], row[2], bool(row[3])])
-    conn.close()
+    for row in rows:
+        dt = datetime.fromisoformat(row[2])
+        schedules.append([row[0], row[1], dt, bool(row[3])])
     return schedules
 
 
@@ -124,54 +122,72 @@ def get_emails(user_email_address, email_subject):
         timestamp.
     The list should be sorted by those timestamps.
     """
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-
-    # First get the sender name from users table
-    c.execute("""
-        SELECT m.from_email_address, u.goal, m.email_subject, m.email_body, m.timestamp
+    sql = """
+        SELECT m.from_email_address, m.email_subject, m.email_body, m.timestamp
         FROM messages m
-        LEFT JOIN users u ON m.from_email_address = u.email
+        LEFT JOIN users u ON m.from_email_address = u.email_address
         WHERE (m.from_email_address = ? OR m.to_email_address = ?)
         AND m.email_subject = ?
         ORDER BY m.timestamp
-    """, (user_email_address, user_email_address, email_subject))
-
+    """
+    rows = execute_sql(sql, parameters=(user_email_address, user_email_address, email_subject), fetch='all')
+    
     emails = []
-    for row in c.fetchall():
+    for row in rows:
         msg = EmailMessage()
         msg['From'] = row[0]
-        msg['Subject'] = row[2]
-        msg['Date'] = row[4]
-        msg.set_content(row[3])
+        msg['Subject'] = row[1]
+        timestamp = datetime.fromisoformat(row[3])
+        msg['Date'] = formatdate(timestamp.timestamp(), localtime=True)
+        msg.set_content(row[2])
         emails.append(msg)
-
-    conn.close()
     return emails
 
 
-def set_schedule(user_email_address, email_subject, scheduled_for):
+def set_schedule_buggy(user_email_address, email_subject, scheduled_for):
     """For now, we schedule only the next check-in with the user. Hence, add row if no matching
     ("user_email_address", "email_subject") is found, else update "scheduled_for"."""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-
     # Try to update existing schedule
-    c.execute("""
+    update_sql = """
         UPDATE schedules
         SET scheduled_for = ?
         WHERE user_email_address = ? AND email_subject = ?
-    """, (scheduled_for, user_email_address, email_subject))
+    """
+    execute_sql(update_sql, parameters=(scheduled_for, user_email_address, email_subject))
 
     # If no rows were updated, insert new schedule
-    if c.rowcount == 0:
-        c.execute("""
-            INSERT INTO schedules (user_email_address, email_subject, scheduled_for, reminder_sent)
-            VALUES (?, ?, ?, ?)
-        """, (user_email_address, email_subject, scheduled_for, False))
+    insert_sql = """
+        INSERT INTO schedules (user_email_address, email_subject, scheduled_for, reminder_sent)
+        VALUES (?, ?, ?, ?)
+    """
+    execute_sql(insert_sql, parameters=(user_email_address, email_subject, scheduled_for, False))
 
-    conn.commit()
-    conn.close()
+
+def set_schedule(user_email_address, email_subject, scheduled_for, reminder_sent):
+    """
+    Schedules the next check-in.
+    Uses INSERT ... ON CONFLICT DO UPDATE (upsert) to ensure only one
+    schedule exists per (user_email_address, email_subject).
+    If a schedule exists, it updates 'scheduled_for'.
+    If no schedule exists, it inserts a new one with reminder_sent=False.
+    Requires SQLite version >= 3.24.0.
+    """
+    # Assumes a UNIQUE constraint exists on (user_email_address, email_subject) in the 'schedules' table.
+    upsert_sql = """
+        INSERT INTO schedules (user_email_address, email_subject, scheduled_for, reminder_sent)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(user_email_address, email_subject) DO UPDATE SET
+            scheduled_for = excluded.scheduled_for,
+            reminder_sent = excluded.reminder_sent
+    """
+    execute_sql(upsert_sql, parameters=(user_email_address, email_subject, scheduled_for, reminder_sent))
+
+
+def get_user_name(user_email_address):
+    """Get user_name from the users table."""
+    sql = "SELECT name FROM users WHERE email_address = ?"
+    result = execute_sql(sql, parameters=(user_email_address,), fetch='one')
+    return result[0] if result else "Dude"
 
 
 def execute_sql(sql, parameters=None, fetch=None):

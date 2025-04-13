@@ -5,13 +5,12 @@ import email.utils
 from database import save_email, email_exists
 from llm_handler import LLMHandler
 from bot import Bot, get_email_body
-from utils import get_message_sent_time, binary_cross_entropy
+from utils import get_message_sent_time, binary_cross_entropy, generate_message_id, datetime_to_rfc, wrap_indent
 from email.message import EmailMessage
 import random
 import tiktoken
 import numpy as np
 from functools import partial
-import hashlib
 
 
 def generate_test_emails(n=3, to='acp@startup.com'):
@@ -39,12 +38,11 @@ def generate_test_emails(n=3, to='acp@startup.com'):
         msg = EmailMessage()
         msg['From'] = addresses[-1] if (i == 0) else random.choice(addresses)
         msg['To'] = to
-        msg['Message-Id'] = '202503252000.' + str(random.randint(0, 1000000))
         msg['Subject'] = subjects[-1] if (i == 0) else random.choice(subjects)
-
         msg['Date'] = get_random_datetime(max_age_hours=3).isoformat()
-
-        msg.set_content(bodies[-1] if (i == 0) else random.choice(bodies))
+        body = bodies[-1] if (i == 0) else random.choice(bodies)
+        msg.set_content(body)
+        msg['Message-ID'] = generate_message_id(msg['From'], msg['Subject'], msg['Date'])
         emails.append(msg)
     return emails
 
@@ -67,18 +65,20 @@ def grab_test_conversation(topic: str):
     return topic, conversations[topic]
 
 
-def convert_messages_to_emails(topic, messages=None, user_address='john.doe@gmail.com',
-                               bot_address='acp@startup.com', response_time=None):
+def convert_messages_to_emails(topic, num_messages=None, user_address='john.doe@gmail.com',
+                               bot_address='acp@startup.com', response_time=5):
     """Returns a list of emails from a ACP conversation on `topic`.
 
     response_time (int): delay between messages in minutes
-    response_time (list): list of datetime objects for Date"""
-    if messages is None:
-        # get them from data.conversations
-        topic, conversation = grab_test_conversation(topic)
-        messages = conversation["messages"]
-        if "dates" in conversation:
-            response_time = conversation["dates"]
+    response_time (list): list of datetime objects for Date
+    """
+    # Get messages from data.test_conversations
+    topic, conversation = grab_test_conversation(topic)
+    messages = conversation["messages"]
+    if num_messages:
+        messages = messages[:num_messages]
+    if "dates" in conversation:
+        response_time = conversation["dates"]
 
     user = dict(role='user', address=user_address)
     bot = dict(role='assistant', address=bot_address)
@@ -97,14 +97,14 @@ def convert_messages_to_emails(topic, messages=None, user_address='john.doe@gmai
         if isinstance(response_time, int):
             num_messages_that_follow = len(messages) - i
             dt = datetime.now().astimezone() - timedelta(minutes=response_time * num_messages_that_follow)
-            msg['Date'] = dt.isoformat()
+            msg['Date'] = datetime_to_rfc(dt)
         elif isinstance(response_time, list) and len(response_time) > i:
-            msg['Date'] = response_time[i].isoformat()
+            msg['Date'] = datetime_to_rfc(response_time[i])
         else:
             raise ValueError("Have no Date for email")
         msg['Subject'] = topic
         msg.set_content(message)
-        msg['Message-Id'] = hashlib.md5((message + msg['Subject'] + msg['Date']).encode()).hexdigest()
+        msg['Message-ID'] = generate_message_id(user['address'], msg['Subject'], msg['Date'])
 
         emails.append(msg)
     return emails
@@ -112,8 +112,7 @@ def convert_messages_to_emails(topic, messages=None, user_address='john.doe@gmai
 
 def fake_send_email(to_email, subject, body):
     print(f"Sending (faked) email to {to_email} ({subject}):")
-    print(body)
-    print('-' * 50)
+    print(wrap_indent(body, width=80, indentation=8))
 
 
 def test_bot():
@@ -124,17 +123,20 @@ def test_bot():
     # Initialize database
     init_db()
 
-    # Create bot instance
+    # Create a test bot instance with simulated mail server
     bot = Bot()
+    bot.test = True
+    bot.email_handler.email = "testbot@startup.void"
+    bot.email_address = bot.email_handler.email
+    bot.name = "Bot, James Bot"
+    assert 'test' in bot.email_address, 'use testbot@startup.void for EMAIL in .env when testing!'
 
-    # If mail server is no configured in .env, test with fake mails
-    if (bot.email_handler.email is None) or ('test' in bot.email_handler.email):
-        # print("Using fake emails for testing.")
-        # bot.email_handler.check_inbox = generate_test_emails
-        topic = "Startup Entrepreneurship"
-        bot.email_handler.check_inbox = partial(convert_messages_to_emails, topic=topic,
-                                                bot_address=bot.email_handler.email)
-        bot.email_handler.send_email = fake_send_email
+    bot.email_handler.check_inbox = partial(convert_messages_to_emails,
+                                            topic = "Startup Entrepreneurship",
+                                            num_messages = 11,
+                                            bot_address = bot.email_handler.email)
+
+    bot.email_handler.send_email = fake_send_email
 
     # Process new emails
     print("\nStarting email processing (process_new_emails)...")
@@ -149,8 +151,13 @@ def test_bot():
     bot.llm_handler.model_id = 'mistralai/mistral-small-24b-instruct-2501'  # schedule_response
     bot.manage_conversations()
 
-    print(f"\nGenerating {len(bot.active_conversations)} responses (generate_response)...")
-    bot.llm_handler.model_id = 'mistralai/mistral-small-24b-instruct-2501'  # generate_response
+    print(f"\nGenerating {len(bot.active_conversations)} responses (generate_response) to these conversations:")
+    for i, conv in enumerate(bot.active_conversations):
+        print(i, conv)
+        assert conv[0] != bot.email_address, "only user_email_addresses may appear here!"
+    print()
+
+    bot.llm_handler.model_id = 'openrouter/optimus-alpha'  # generate_response
     bot.generate_responses()
 
     print("-" * 50)
