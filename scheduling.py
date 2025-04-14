@@ -11,16 +11,20 @@ leaves it to the agents to decide what to do.
 """
 
 from abc import ABC, abstractmethod
-from typing import List, Union
+from typing import List, Tuple, Union
 from datetime import datetime, timedelta
-from utils import get_current_user_time
+from utils import get_current_user_time, get_message_sent_time
 
 
 # Abstract Strategy (Policy) class
 class ReminderPolicy(ABC):
+    def __init__(self) -> None:
+        super().__init__()
+        self.name = self.__class__.__name__
+
     @abstractmethod
     def process_schedule(self,
-                         schedule: List[Union[str, datetime, bool, int]],
+                         schedule: Tuple[str, str, datetime, Union[bool, int]],
                          just_got_user_mail: bool,
                          messages: list,
                          now: datetime) -> bool | str:
@@ -30,7 +34,7 @@ class ReminderPolicy(ABC):
 
 class DefaultPolicy(ReminderPolicy):
     def process_schedule(self,
-                         schedule: List[Union[str, datetime, bool, int]],
+                         schedule: Tuple[str, str, datetime, Union[bool, int]],
                          just_got_user_mail: bool,
                          messages: list,
                          now: datetime) -> bool | str:
@@ -40,7 +44,7 @@ class DefaultPolicy(ReminderPolicy):
 
 class AskAgentPolicy(ReminderPolicy):
     def process_schedule(self,
-                         schedule: List[Union[str, datetime, bool, int]],
+                         schedule: Tuple[str, str, datetime, Union[bool, int]],
                          just_got_user_mail: bool,
                          messages: list,
                          now: datetime) -> bool | str:
@@ -52,6 +56,7 @@ class AskAgentPolicy(ReminderPolicy):
 
 class EarlyReminderPolicy(ReminderPolicy):
     def __init__(self):
+        super().__init__()
         self.reminder_time = 9
 
     def set_reminder_time(self, hour: int):
@@ -59,7 +64,7 @@ class EarlyReminderPolicy(ReminderPolicy):
         self.reminder_time = int(hour)
 
     def process_schedule(self,
-                         schedule: List[Union[str, datetime, bool, int]],
+                         schedule: Tuple[str, str, datetime, Union[bool, int]],
                          just_got_user_mail: bool,
                          messages: list,
                          now: datetime) -> bool | str:
@@ -72,6 +77,7 @@ class EarlyReminderPolicy(ReminderPolicy):
 
         # Assumptions
         assert due_time.date() == now.date(), "scheduled time is not today"
+        assert not reminder_sent, "first reminder already sent"
         assert sender_email == user, f"first/last message not from user but {sender_email}"
 
         # Action
@@ -83,6 +89,7 @@ class EarlyReminderPolicy(ReminderPolicy):
 
 class SecondReminderPolicy(ReminderPolicy):
     def __init__(self):
+        super().__init__()
         self.waiting_time = timedelta(hours=3)
 
     def set_waiting_time(self, delta: timedelta):
@@ -90,7 +97,7 @@ class SecondReminderPolicy(ReminderPolicy):
         self.waiting_time = delta
 
     def process_schedule(self,
-                         schedule: List[Union[str, datetime, bool, int]],
+                         schedule: Tuple[str, str, datetime, Union[bool, int]],
                          just_got_user_mail: bool,
                          messages: list,
                          now: datetime) -> bool | str:
@@ -109,6 +116,7 @@ class SecondReminderPolicy(ReminderPolicy):
 
 class LateReminderPolicy(ReminderPolicy):
     def __init__(self):
+        super().__init__()
         self.waiting_time = timedelta(hours=1)
 
     def set_waiting_time(self, delta: timedelta):
@@ -116,7 +124,7 @@ class LateReminderPolicy(ReminderPolicy):
         self.waiting_time = delta
 
     def process_schedule(self,
-                         schedule: List[Union[str, datetime, bool, int]],
+                         schedule: Tuple[str, str, datetime, Union[bool, int]],
                          just_got_user_mail: bool,
                          messages: list,
                          now: datetime) -> bool | str:
@@ -134,6 +142,7 @@ class LateReminderPolicy(ReminderPolicy):
 
 class WaitForSchedulePolicy(ReminderPolicy):
     def __init__(self):
+        super().__init__()
         self.max_delay = timedelta(hours=6)
 
     def set_max_delay(self, max_delay: timedelta):
@@ -141,7 +150,7 @@ class WaitForSchedulePolicy(ReminderPolicy):
         self.max_delay = max_delay
 
     def process_schedule(self,
-                         schedule: List[Union[str, datetime, bool, int]],
+                         schedule: Tuple[str, str, datetime, Union[bool, int]],
                          just_got_user_mail: bool,
                          messages: list,
                          now: datetime) -> bool | str:
@@ -151,7 +160,7 @@ class WaitForSchedulePolicy(ReminderPolicy):
         (if nothing scheduled ahead) ask agent.
         """
         user, subject, due_time, reminder_sent = schedule
-        last_contact = messages[-1]["Date"]
+        last_contact = get_message_sent_time(messages[-1])
         hours_past = self.max_delay.seconds // 3600
         schedule_ahead = (due_time.day - now.day) > 0
 
@@ -166,7 +175,7 @@ class WaitForSchedulePolicy(ReminderPolicy):
 
 class ImmediateResponsePolicy(ReminderPolicy):
     def process_schedule(self,
-                         schedule: List[Union[str, datetime, bool, int]],
+                         schedule: Tuple[str, str, datetime, Union[bool, int]],
                          just_got_user_mail: bool,
                          messages: list,
                          now: datetime) -> bool | str:
@@ -180,11 +189,11 @@ class ImmediateResponsePolicy(ReminderPolicy):
 
 class BestPolicy(ReminderPolicy):
     def process_schedule(self,
-                         schedule: List[Union[str, datetime, bool, int]],
+                         schedule: Tuple[str, str, datetime, Union[bool, int]],
                          just_got_user_mail: bool,
                          messages: list,
                          now: datetime) -> bool | str:
-        raise NotImplementedError
+        raise NotImplementedError('not implemented')
 
 
 # The bot will try these policies in this order:
