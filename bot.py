@@ -3,7 +3,7 @@ from datetime import datetime
 import textwrap
 from database import save_email, email_exists, get_all_schedules, get_emails, set_schedule, get_user_name
 from email_handler import EmailHandler
-from llm_handler import LLMHandler
+from llm_handler import EmailValidator, EmailModerator, ResponseScheduler, ResponseGenerator
 import email.utils
 from scheduling import ScheduleProcessor, REMINDER_POLICIES, choose_policy
 from utils import is_valid_email_address, get_email_body, get_message_sent_time, generate_message_id
@@ -20,12 +20,15 @@ class Bot:
     If the bot crashes at any moment, it can be restarted with the database in
     its current state.
     """
-    def __init__(self):
+    def __init__(self, validator=None, moderator=None, scheduler=None, generator=None):
         self.test = False
         self.email_handler = EmailHandler()
         self.email_address = self.email_handler.email  # bot address from .env
         self.name = self.email_address.split('@')
-        self.llm_handler = LLMHandler()
+        self.validator = validator or EmailValidator()
+        self.moderator = moderator or EmailModerator()
+        self.scheduler = scheduler or ResponseScheduler()
+        self.generator = generator or ResponseGenerator()
         self.active_conversations = set()  # (user_email_address, subject)
         self.ask_agent = set()  # conversations handled by schedule_response agent
 
@@ -62,7 +65,7 @@ class Bot:
             if self.test and (sender_email == self.email_address):
                 response, reasoning = 'pass', 'test email from myself'
             else:
-                response, reasoning = self.llm_handler.validate_email(sender_email, subject, body)
+                response, reasoning = self.validator.validate_email(sender_email, subject, body)
             if response == "pass":
                 pass
             elif response == "block":
@@ -78,21 +81,19 @@ class Bot:
                 # skip moderation
                 is_appropriate, moderation_result = True, 'APPROPRIATE'
             else:
-                is_appropriate, moderation_result = self.llm_handler.moderate_email(body)
+                is_appropriate, moderation_result = self.moderator.moderate_email(body)
             if not is_appropriate:
                 print(f"Moderation result for {message_id}: {moderation_result}")
-                save_moderation(
-                    message_id=message_id,
-                    timestamp=sent_at,
-                    sender_name=sender_name,
-                    from_email_address=sender_email,
-                    to_email_address=to_email_address or self.email_address,
-                    email_subject=subject,
-                    email_body=body,
-                    email_sent=True,
-                )
-                print(f"Saved new email from {sender_email} ({subject}). "
-                      f"Delay: {(datetime.now().astimezone() - sent_at).seconds / 60:.1f} min")
+                #save_moderation(
+                #    message_id=message_id,
+                #    timestamp=sent_at,
+                #    sender_name=sender_name,
+                #    from_email_address=sender_email,
+                #    to_email_address=to_email_address or self.email_address,
+                #    email_subject=subject,
+                #    email_body=body,
+                #    email_sent=True,
+                #)
 
             # Save email information to database
             save_email(
@@ -180,8 +181,8 @@ class Bot:
         for user_email_address, email_subject in self.ask_agent:
             messages = get_emails(user_email_address, email_subject)
 
-            result = self.llm_handler.schedule_response_v2(messages, bot_address=self.email_address,
-                                                           now=None, verbose=False, DEBUG=False)
+            result = self.scheduler.schedule_response_v2(messages, bot_address=self.email_address,
+                                                    now=None, verbose=False, DEBUG=False)
 
             if self.test:
                 assert isinstance(user_email_address, str)  # DEBUG
@@ -212,10 +213,10 @@ class Bot:
             messages = get_emails(user_email_address, email_subject)
             user_name = get_user_name(user_email_address)
 
-            email_body = self.llm_handler.generate_response(messages,
-                                                            bot_address=self.email_address,
-                                                            user_name=user_name,
-                                                            bot_name=self.name)
+            email_body = self.generator.generate_response(messages,
+                                                          bot_address=self.email_address,
+                                                          user_name=user_name,
+                                                          bot_name=self.name)
 
             if not email_body:
                 print(f"generate_response agent failed generating response to "

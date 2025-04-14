@@ -75,28 +75,26 @@ class LLMHandler:
             except Exception:
                 pass
 
-    def get_model_pricing(self, model_id=None):
+    def get_model_pricing(self):
         """Returns input pricing, output pricing (USD/token)."""
         # data['architecture']['tokenizer'] values are neither correct not supported by tiktoken
-        model_id = model_id or self.model_id
         try:
-            data = available_models[model_id]
+            data = available_models[self.model_id]
             pricing_in = float(data['pricing']['prompt'])
             pricing_out = float(data['pricing']['completion'])
         except KeyError as e:
-            print(f"Error: missing pricing data {e} for model {model_id}")
+            print(f"Error: missing pricing data {e} for model {self.model_id}")
             return None, None, None
         return pricing_in, pricing_out
 
-    def get_cost_estimate(self, model_id=None, prompts=[], output=''):
+    def get_cost_estimate(self, prompts=[], output=''):
         """Returns a quick estimate of # input tokens, # output tokens, and total cost.
 
         The real numbers differ because native tokenizer is not known and
         Prompt Caching is not taken into account.
         """
-        model_id = model_id or self.model_id
         tokenizer = "gpt-4o"  # native tokenizer is usually not available
-        price_in, price_out = self.get_model_pricing(model_id)
+        price_in, price_out = self.get_model_pricing()
         try:
             encoding = tiktoken.encoding_for_model(tokenizer)
         except Exception as e:
@@ -130,9 +128,9 @@ class LLMHandler:
             return 0, 0, 0
         return num_input_tokens, num_output_tokens, cost
 
-    def show_usage(self, model_id, prompts, output, response):
+    def show_usage(self, prompts, output, response):
         """Count input/output tokens, calculate LLM cost."""
-        num_input_tokens, num_output_tokens, cost = self.get_cost_estimate(model_id, prompts, output)
+        num_input_tokens, num_output_tokens, cost = self.get_cost_estimate(prompts, output)
         print(f"Tokens in: {num_input_tokens}, out: {num_output_tokens}, total cost: (USD) {cost:.6f} (estimate)")
         generation_id = response.json().get("id", None)
         if generation_id:
@@ -149,7 +147,6 @@ class EmailValidator(LLMHandler):
         email_sender,
         email_subject,
         email_body,
-        model_id=None,
         subject_cutoff=50,
         body_cutoff=500,
     ):
@@ -157,7 +154,6 @@ class EmailValidator(LLMHandler):
 
         Returns True if email appears valid.
         """
-        model_id = model_id or self.model_id
         if len(email_subject) > subject_cutoff:
             email_subject = (
                 email_subject[:subject_cutoff]
@@ -219,7 +215,7 @@ class EmailValidator(LLMHandler):
                 {"role": "user", "content": user_prompt},
             ],
         }
-        if model_id in models_supporting_structured_output:
+        if self.model_id in models_supporting_structured_output:
             openrouter_json["response_format"] = response_format
             expecting_structured_output = True
         else:
@@ -324,7 +320,6 @@ class ResponseScheduler(LLMHandler):
     def schedule_response(
         self,
         emails,
-        model_id=None,
         bot_address="acp@startup.com",
         now=None,
         verbose=False,
@@ -341,8 +336,6 @@ class ResponseScheduler(LLMHandler):
         - probability (float):    likelihood that the user expects a response or reminder
                                   from the assistant right now.
         """
-        model_id = model_id or self.model_id
-
         system_prompt = """
             You are an AI assistant that helps determine when to respond to email conversations.
 
@@ -420,11 +413,11 @@ class ResponseScheduler(LLMHandler):
             "temperature": 0.1,  # Lower temperature for more deterministic responses
         }
 
-        if model_id in models_supporting_structured_output:
+        if self.model_id in models_supporting_structured_output:
             openrouter_json["response_format"] = response_format
         else:
             print(
-                f"WARNING: schedule_response uses model w/o response_format: {model_id}"
+                f"WARNING: schedule_response uses model w/o response_format: {self.model_id}"
             )
 
         if verbose:
@@ -511,7 +504,6 @@ class ResponseScheduler(LLMHandler):
     def schedule_response_v2(
         self,
         emails,
-        model_id=None,
         bot_address="acp@startup.com",
         now=None,
         verbose=False,
@@ -531,8 +523,6 @@ class ResponseScheduler(LLMHandler):
         The system prompt has auxiliary tasks that might be easier for the LLM, the return values are
         then inferred deterministically.
         """
-        model_id = model_id or self.model_id
-
         system_prompt = """
             You support an AI assistant that plays the role of an accountability partner for a human user.
             Your task is to help the assistant with sending responses to the user timely and schedule
@@ -643,11 +633,11 @@ class ResponseScheduler(LLMHandler):
             "temperature": 0.1,  # Lower temperature for more deterministic responses
         }
 
-        if model_id in models_supporting_structured_output:
+        if self.model_id in models_supporting_structured_output:
             openrouter_json["response_format"] = response_format
         else:
             print(
-                f"WARNING: schedule_response uses model w/o response_format: {model_id}"
+                f"WARNING: schedule_response uses model w/o response_format: {self.model_id}"
             )
 
         if verbose:
@@ -693,7 +683,7 @@ class ResponseScheduler(LLMHandler):
             print(f"Error: no message/content found in LLM response {response.json()["choices"][0]}")
             return dict(error=f"Error: {e}")
 
-        self.show_usage(model_id, [system_prompt, user_prompt], content, response)
+        self.show_usage([system_prompt, user_prompt], content, response)
 
         # Parse the JSON structured output
         try:
@@ -848,10 +838,8 @@ class ResponseGenerator(LLMHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def generate_response(self, emails, bot_address, user_name="User", bot_name="Accountability Partner", model_id=None):
+    def generate_response(self, emails, bot_address, user_name="User", bot_name="Accountability Partner"):
         """Generate a chat completion with the role of an Accountability Partner."""
-        model_id = model_id or self.model_id
-
         system_prompt = f"""
         You are an accountability partner that helps users achieve their goals through email communication.
         Your name is {bot_name}.
@@ -888,7 +876,7 @@ class ResponseGenerator(LLMHandler):
                 self.openrouter_base_url,
                 headers=self.openrouter_headers,
                 json={
-                    "model": model_id,
+                    "model": self.model_id,
                     "messages": messages,
                     "temperature": 0.7,  # Balanced between creativity and consistency
                 },
@@ -897,7 +885,7 @@ class ResponseGenerator(LLMHandler):
 
             if response.status_code == 200:
                 content = response.json()["choices"][0]["message"]["content"].strip()
-                self.show_usage(model_id, messages, content, response)
+                self.show_usage(messages, content, response)
                 return content
             else:
                 print(f"Error generating response: {response.status_code} - {response.text}")

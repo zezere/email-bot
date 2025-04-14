@@ -4,17 +4,14 @@ from email_handler import EmailHandler
 import email.utils
 from database import save_email, email_exists
 from bot import Bot, get_email_body
-from utils import get_message_sent_time, binary_cross_entropy, generate_message_id, datetime_to_rfc, wrap_indent
+from utils import (get_message_sent_time, binary_cross_entropy, generate_message_id,
+                   datetime_to_rfc, wrap_indent)
 from email.message import EmailMessage
 import random
 import tiktoken
 import numpy as np
 from functools import partial
-from llm_handler import (
-    EmailValidator,
-    ResponseScheduler,
-    EmailModerator
-)
+from llm_handler import EmailValidator, ResponseScheduler, EmailModerator, ResponseGenerator
 
 
 def generate_test_emails(n=3, to='acp@startup.com'):
@@ -53,7 +50,7 @@ def generate_test_emails(n=3, to='acp@startup.com'):
 
 def get_random_datetime(max_age_hours=3):
     """Returns a random time in the past with random time zone (tz_info)."""
-    random_timezone = timezone(timedelta(seconds=random.randint(-12, 14)))  # Random offset between -12 and +14 hours
+    random_timezone = timezone(timedelta(seconds=random.randint(-12, 14)))
     random_delay_sec = timedelta(seconds=random.randint(0, 3600 * max_age_hours))
     return datetime.now(random_timezone) - random_delay_sec
 
@@ -128,7 +125,10 @@ def test_bot():
     init_db()
 
     # Create a test bot instance with simulated mail server
-    bot = Bot()
+    bot = Bot(
+        validator=EmailValidator(model_id='mistralai/mistral-7b-instruct'),
+        scheduler=ResponseScheduler(model_id='mistralai/mistral-small-24b-instruct-2501'),
+        generator=ResponseGenerator(model_id='deepseek/deepseek-v3-base:free'))
     bot.test = True
     bot.email_handler.email = "testbot@startup.void"
     bot.email_address = bot.email_handler.email
@@ -136,15 +136,14 @@ def test_bot():
     assert 'test' in bot.email_address, 'use testbot@startup.void for EMAIL in .env when testing!'
 
     bot.email_handler.check_inbox = partial(convert_messages_to_emails,
-                                            topic = "Startup Entrepreneurship",
-                                            num_messages = 11,
-                                            bot_address = bot.email_handler.email)
+                                            topic="Startup Entrepreneurship",
+                                            num_messages=5,
+                                            bot_address=bot.email_handler.email)
 
     bot.email_handler.send_email = fake_send_email
 
     # Process new emails
     print("\nStarting email processing (process_new_emails)...")
-    bot.llm_handler.model_id = 'mistralai/mistral-7b-instruct'  # validate_email
     bot.process_new_emails()
 
     print("\nStarting schedule policy processing (process_schedules)...")
@@ -152,16 +151,15 @@ def test_bot():
 
     print("\nManage conversations (schedule_response)...")
     print(f"The bot will call scheduler_agent on {len(bot.ask_agent)} conversations")
-    bot.llm_handler.model_id = 'mistralai/mistral-small-24b-instruct-2501'  # schedule_response
     bot.manage_conversations()
 
-    print(f"\nGenerating {len(bot.active_conversations)} responses (generate_response) to these conversations:")
+    print(f"\nGenerating {len(bot.active_conversations)} responses (generate_response) "
+          "to these conversations:")
     for i, conv in enumerate(bot.active_conversations):
         print(i, conv)
         assert conv[0] != bot.email_address, "only user_email_addresses may appear here!"
     print()
 
-    bot.llm_handler.model_id = 'openrouter/optimus-alpha'  # generate_response
     bot.generate_responses()
 
     print("-" * 50)
@@ -217,17 +215,16 @@ def test_validation():
     from bot import is_valid_email_address
     from time import perf_counter, sleep
 
-    validator = EmailValidator()
-    validation_model = 'mistralai/mistral-small-24b-instruct-2501:free'
-    gt_model = 'google/gemini-2.5-pro-exp-03-25:free'
+    validator = EmailValidator(model_id='mistralai/mistral-small-24b-instruct-2501:free')
+    gt_validator = EmailValidator(model_id='google/gemini-2.5-pro-exp-03-25:free')
 
     test_emails = generate_test_emails(100)
     test_labels = [None for _ in test_emails]
 
     print("\nTesting validation functionality")
     print("-" * 50)
-    print(f"Validation model:   {validation_model}")
-    print(f"Ground truth model: {gt_model}")
+    print(f"Validation model:   {validator.model_id}")
+    print(f"Ground truth model: {gt_validator.model_id}")
 
     times = {'gt': [], 'valid': []}  # measure agent's total response time
 
@@ -247,8 +244,7 @@ def test_validation():
         gt_reasoning = ''
         if label is None:
             t0 = perf_counter()
-            label, gt_reasoning = validator.validate_email(sender_email, subject,
-                                                         body, model_id=gt_model)
+            label, gt_reasoning = gt_validator.validate_email(sender_email, subject, body)
             times['gt'].append(perf_counter() - t0)
 
             # Handle rate limits
@@ -256,8 +252,7 @@ def test_validation():
                 print("waiting to pass rate-limit for free models...")
                 sleep(60)
                 t0 = perf_counter()
-                label, gt_reasoning = validator.validate_email(sender_email, subject,
-                                                             body, model_id=gt_model)
+                label, gt_reasoning = gt_validator.validate_email(sender_email, subject, body)
                 times['gt'].append(perf_counter() - t0)
             elif gt_reasoning == 'wait a day':
                 print("daily rate limit for free models reached, quitting.")
@@ -269,8 +264,7 @@ def test_validation():
 
         # Test
         t0 = perf_counter()
-        response, reasoning = validator.validate_email(sender_email, subject,
-                                                     body, model_id=validation_model)
+        response, reasoning = validator.validate_email(sender_email, subject, body)
         times['valid'].append(perf_counter() - t0)
         if response == label:
             print(f"PASSED validation: {response}")
@@ -298,15 +292,17 @@ def test_scheduler(emails=None, bot_address='acp@startup.com'):
     date/time and a list of past emails from a conversation. Labels are
     generated from conversation time stamps.
     """
-    scheduler = ResponseScheduler()
-    scheduler_model = 'openrouter/quasar-alpha'  # free+cloaked, excels at this task!
-    # scheduler_model = 'mistralai/mistral-small-24b-instruct-2501'  #  0.1/0.3 $/M tokens in/out
-    # scheduler_model = 'deepseek/deepseek-chat-v3-0324:free'  # no structured output
-    # scheduler_model = 'google/gemini-2.5-pro-exp-03-25:free'  # structured output, but RESOURCE_EXHAUSTED
-    # scheduler_model = 'google/gemini-2.0-flash-exp:free'  # OK but due/probability inconsistent
-    # scheduler_model = 'meta-llama/llama-3.1-8b-instruct'  # plain stupid (8b params), needs very clear prompt
-    # scheduler_model = 'mistralai/mistral-small-3.1-24b-instruct'  # worse
-    # scheduler_model = 'openai/gpt-4o-mini'  # better reasoning than mistral-small-24b-instruct, but also 2x more expensive
+    scheduler = ResponseScheduler(
+        model_id='openrouter/quasar-alpha'  # free+cloaked, excels at this task!
+        # model_id='mistralai/mistral-small-24b-instruct-2501'  #  0.1/0.3 $/M tokens in/out
+        # model_id='deepseek/deepseek-chat-v3-0324:free'  # no structured output
+        # model_id='google/gemini-2.5-pro-exp-03-25:free'  # structured output, but RESOURCE_EXHAUSTED
+        # model_id='google/gemini-2.0-flash-exp:free'  # OK but due/probability inconsistent
+        # model_id='meta-llama/llama-3.1-8b-instruct'  # plain stupid (8b params), needs very clear prompt
+        # model_id='mistralai/mistral-small-3.1-24b-instruct'  # worse
+        # model_id='openai/gpt-4o-mini'  # better reasoning than mistral-small-24b-instruct,
+        #                                  but also 2x more expensive
+    )
 
     verbose = True  # print prompts
     DEBUG = False  # skip LLM calls
@@ -322,17 +318,16 @@ def test_scheduler(emails=None, bot_address='acp@startup.com'):
 
     print('\nTesting scheduler agents')
     print("-" * 50)
-    print(f'Scheduler model:   {scheduler_model}')
+    print(f'Scheduler model:   {scheduler.model_id}')
     print(f'Conversation:      {topic} ({len(test_emails)} messages)')
 
-    def _validate(llm_handler, message_history, label, model_id, bot_address, current_time,
+    def _validate(message_history, label, bot_address, current_time,
                   verbose, DEBUG, exit_on_first_mistake=False):
         prediction = scheduler.schedule_response_v2(message_history,
-                                                      model_id=model_id,
-                                                      bot_address=bot_address,
-                                                      now=current_time,
-                                                      verbose=verbose,
-                                                      DEBUG=DEBUG)
+                                                    bot_address=bot_address,
+                                                    now=current_time,
+                                                    verbose=verbose,
+                                                    DEBUG=DEBUG)
 
         # Check for error first
         error = prediction.get('error', None)
@@ -383,7 +378,7 @@ def test_scheduler(emails=None, bot_address='acp@startup.com'):
                 print(f"Message {i+1} is delayed, testing prediction for msg {i} at various times...")
                 while dt < due_time - timedelta(minutes=90):
                     label = (False, 0.0)
-                    acc, loss, error = _validate(scheduler, message_history, label, scheduler_model,
+                    acc, loss, error = _validate(scheduler, message_history, label,
                                                  bot_address, dt, verbose, DEBUG, exit_on_first_mistake)
                     if error:
                         break
@@ -393,7 +388,7 @@ def test_scheduler(emails=None, bot_address='acp@startup.com'):
 
                 dt = due_time + timedelta(minutes=90)
                 label = (True, 1.0)
-                acc, loss, error = _validate(scheduler, message_history, label, scheduler_model,
+                acc, loss, error = _validate(scheduler, message_history, label,
                                              bot_address, dt, verbose, DEBUG, exit_on_first_mistake)
                 if error:
                     break
@@ -406,7 +401,7 @@ def test_scheduler(emails=None, bot_address='acp@startup.com'):
         else:
             continue
 
-        acc, loss, error = _validate(llm_handler, message_history, label, scheduler_model,
+        acc, loss, error = _validate(message_history, label,
                                      bot_address, current_time, verbose, DEBUG, exit_on_first_mistake)
         if error:
             break
