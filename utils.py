@@ -1,9 +1,10 @@
 import re
 import json
-import email
 from datetime import datetime, timezone, timedelta
+import hashlib
+import textwrap
 import numpy as np
-import email.utils
+from email.utils import format_datetime, parsedate_tz, parsedate_to_datetime, formatdate
 from email.message import Message  # Used for type hinting
 
 
@@ -28,15 +29,35 @@ def get_message_sent_time(email):
         print(f'Warning: email has no Date field:\n{email}')
         return datetime.now().astimezone()
     try:
-        dt = datetime.fromisoformat(s)
-        dt = dt.astimezone() if dt.tzinfo is None else dt
+        dt = parsedate_to_datetime(s)
     except ValueError as e:
-        print(f"Error in email Date field: {e}")
-        return datetime.now().astimezone()
+        print("Warning: email Date not in RFC 2822 format, trying isoformat")
+        try:
+            dt = datetime.fromisoformat(s)
+        except ValueError:
+            print(f"Error in email Date field: {e}")
+            return datetime.now().astimezone()
     except Exception as e:
         print(f"Error: unexpected datetime error: {e}")
         return datetime.now().astimezone()
-    return dt
+
+    return dt.astimezone() if dt.tzinfo is None else dt
+
+
+def datetime_to_rfc(dt):
+    """Convert datetime object to RFC 2822 (email) format"""
+    return formatdate(dt.timestamp(), localtime=True)
+
+
+def iso_to_rfc(s: str):
+    """Convert date, time from iso (SQL) to RFC 2822 (email) format."""
+    dt = datetime.fromisoformat(s)
+    return datetime_to_rfc(dt)
+
+
+def generate_message_id(user_email_address, email_subject, email_date):
+    # print(f"hashlib.md5(({user_email_address + email_subject + email_date}).encode()).hexdigest()")
+    return hashlib.md5((user_email_address + email_subject + email_date).encode()).hexdigest()
 
 
 def count_words(text):
@@ -64,7 +85,7 @@ def format_emails(emails, style='human_readable', bot_address='acp@startup.com')
     # Process all emails with common logic first
     for msg in emails:
         dt = get_message_sent_time(msg)
-        formatted_date = email.utils.format_datetime(dt)[:-9] if dt else "Unknown"
+        formatted_date = format_datetime(dt)[:-9] if dt else "Unknown"
         sender = "assistant" if (msg.get("From", "Unknown") == bot_address) else "user"
         body = get_email_body(msg)
 
@@ -74,7 +95,7 @@ def format_emails(emails, style='human_readable', bot_address='acp@startup.com')
                 "Date": formatted_date,
                 "Body": body
             })
-        elif style.lower == 'chat':
+        elif style.lower() == 'chat':
             email_history.append({
                 "role": sender,
                 "content": "\n".join([f"Current time: {formatted_date}", body]),
@@ -115,7 +136,7 @@ def get_current_user_time(user_message: Message, now: datetime = None) -> str:
 
     # Parse the date string and extract the timezone offset in seconds from UTC
     # parsedate_tz returns a tuple: (year, month, day, hour, min, sec, wkday, yearday, isdst, offset_seconds)
-    parsed_date_tuple = email.utils.parsedate_tz(date_header)
+    parsed_date_tuple = parsedate_tz(date_header)
 
     if parsed_date_tuple is None:
         raise ValueError(f"Error: Could not parse the 'Date' header: {date_header}")
@@ -150,3 +171,42 @@ def get_current_user_time(user_message: Message, now: datetime = None) -> str:
     now_in_user_tz = now_utc.astimezone(user_timezone)
 
     return now_in_user_tz
+
+
+def wrap_indent(text, width, indentation=4):
+    """
+    Indents text using spaces, wraps long lines, and preserves existing newlines.
+
+    Args:
+        text (str): The input text.
+        width (int): The maximum line width (including indentation).
+        indentation (int, optional): The number of spaces to use for indentation.
+                                     Defaults to 4.
+
+    Returns:
+        str: The formatted text.
+    """
+    indent_str = " " * indentation
+
+    # Create a TextWrapper instance
+    wrapper = textwrap.TextWrapper(
+        width=width,
+        initial_indent=indent_str,
+        subsequent_indent=indent_str,
+        replace_whitespace=False,  # preserves existing space/tab sequences within lines   
+        break_long_words=False,  # doesn't break words unless absolutely necessary
+        break_on_hyphens=True
+    )
+
+    # Split the original text into lines based on existing newlines
+    original_lines = text.splitlines()
+
+    # Handle the case of empty input text
+    if not original_lines:
+        return ""
+
+    # Wrap each line individually using the wrapper's fill method
+    processed_lines = [wrapper.fill(line) for line in original_lines]
+
+    # Join the processed lines back together with newlines
+    return "\n".join(processed_lines)

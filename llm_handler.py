@@ -9,13 +9,12 @@ from dotenv import load_dotenv
 from openai import OpenAI
 import email
 import numpy as np
-from utils import count_words, format_emails
+from utils import count_words, format_emails, wrap_indent
 import tiktoken
 
 load_dotenv()
 
 
-<<<<<<< Updated upstream
 def get_available_models():
     """Returns a dict of all models and their specs, as provided via API."""
     try:
@@ -45,8 +44,6 @@ models_supporting_structured_output = {
 }
 
 
-=======
->>>>>>> Stashed changes
 class LLMHandler:
     def __init__(
         self,
@@ -61,10 +58,8 @@ class LLMHandler:
             "Content-Type": "application/json",
             "HTTP-Referer": "https://github.com/yourusername/email-bot",
         }
-<<<<<<< Updated upstream
-        self.model_id = 'mistralai/mistral-7b-instruct'  # $0.03/M in, $0.055/M out
-        #self.model_id = "mistralai/mistral-small-24b-instruct-2501:free"  # Free model
-        self.llm_timeout = 5  # response timeout in seconds
+        self.llm_timeout = timeout
+        self.model_id = model_id
 
     def get_rate_limits(self):
         try:
@@ -107,6 +102,7 @@ class LLMHandler:
         except Exception as e:
             print(f"Error in tiktoken encoding: {e}")
             return 0, 0, 0
+        prompts = [item['content'] if isinstance(item, dict) else str(item) for item in prompts]
         num_input_tokens = len(encoding.encode("\n".join(prompts)))
         num_output_tokens = len(encoding.encode(output))
         cost = num_input_tokens * price_in + num_output_tokens * price_out
@@ -134,20 +130,14 @@ class LLMHandler:
             return 0, 0, 0
         return num_input_tokens, num_output_tokens, cost
 
-    def validate_email(self, email_sender, email_subject, email_body, model_id=None, subject_cutoff=50, body_cutoff=500):
-=======
-        self.llm_timeout = timeout
-        self.model_id = model_id
-        self.models_supporting_structured_output = {
-            "google/gemini-2.5-pro-exp-03-25:free",
-            "google/gemini-2.0-flash-lite-preview-02-05:free",
-            "google/gemma-3-27b-it:free",
-            "google/gemini-2.0-flash-exp:free",
-            "meta-llama/llama-3.1-8b-instruct",
-            "mistralai/mistral-small-24b-instruct-2501",
-            "mistralai/mistral-small-3.1-24b-instruct",
-            "openai/gpt-4o-mini",
-        }
+    def show_usage(self, model_id, prompts, output, response):
+        """Count input/output tokens, calculate LLM cost."""
+        num_input_tokens, num_output_tokens, cost = self.get_cost_estimate(model_id, prompts, output)
+        print(f"Tokens in: {num_input_tokens}, out: {num_output_tokens}, total cost: (USD) {cost:.6f} (estimate)")
+        generation_id = response.json().get("id", None)
+        if generation_id:
+            num_input_tokens, num_output_tokens, cost = self.get_cost(generation_id)
+            print(f"Tokens in: {num_input_tokens}, out: {num_output_tokens}, total cost: (USD) {cost:.6f} (real)")
 
 
 class EmailValidator(LLMHandler):
@@ -163,7 +153,6 @@ class EmailValidator(LLMHandler):
         subject_cutoff=50,
         body_cutoff=500,
     ):
->>>>>>> Stashed changes
         """Identify spam/DoS using a free or cheap OpenRouter LLM.
 
         Returns True if email appears valid.
@@ -230,7 +219,7 @@ class EmailValidator(LLMHandler):
                 {"role": "user", "content": user_prompt},
             ],
         }
-        if model_id in self.models_supporting_structured_output:
+        if model_id in models_supporting_structured_output:
             openrouter_json["response_format"] = response_format
             expecting_structured_output = True
         else:
@@ -384,13 +373,8 @@ class ResponseScheduler(LLMHandler):
             return dict(response_is_due=True, probability=1.0)
 
         # Create the user prompt with the email history
-<<<<<<< Updated upstream
         email_history = format_emails(emails, style='json', bot_address=bot_address)
         now = now or datetime.now().astimezone()
-=======
-        email_history = format_emails(emails, style="json", bot_address=bot_address)
-        now = now or datetime.now()
->>>>>>> Stashed changes
         user_prompt = (
             "Here is the email conversation history:\n"
             f"{email_history}\n"
@@ -436,7 +420,7 @@ class ResponseScheduler(LLMHandler):
             "temperature": 0.1,  # Lower temperature for more deterministic responses
         }
 
-        if model_id in self.models_supporting_structured_output:
+        if model_id in models_supporting_structured_output:
             openrouter_json["response_format"] = response_format
         else:
             print(
@@ -618,24 +602,6 @@ class ResponseScheduler(LLMHandler):
             """
         system_prompt = textwrap.dedent(system_prompt)
 
-<<<<<<< Updated upstream
-=======
-        # Deterministic checks
-        if len(emails) == 0:
-            print("ERROR: empty list of emails")
-            return dict(error="ERROR: empty list of emails")
-        if emails[-1].get("From", "Unknown") == bot_address:
-            # Don't respond to self
-            return dict(
-                reasoning="deterministic", response_is_due=False, probability=0.0
-            )
-        if (len(emails) == 1) and (emails[0].get("From", "Unknown") != bot_address):
-            # Always respond to first user mail
-            return dict(
-                reasoning="deterministic", response_is_due=True, probability=1.0
-            )
-
->>>>>>> Stashed changes
         # Create the user prompt with all email messages in human-readable format
         user_prompt = format_emails(emails, style="human", bot_address=bot_address)
 
@@ -677,7 +643,7 @@ class ResponseScheduler(LLMHandler):
             "temperature": 0.1,  # Lower temperature for more deterministic responses
         }
 
-        if model_id in self.models_supporting_structured_output:
+        if model_id in models_supporting_structured_output:
             openrouter_json["response_format"] = response_format
         else:
             print(
@@ -703,60 +669,6 @@ class ResponseScheduler(LLMHandler):
                 json=openrouter_json,
                 timeout=self.llm_timeout,
             )
-<<<<<<< Updated upstream
-=======
-
-            if response.status_code == 200:
-                if "choices" not in response.json():
-                    # Handle errors from LLM provider
-                    if "error" in response.json():
-                        error = response.json()["error"]
-                        print(error["message"])
-                        if "metadata" in error and "raw" in error["metadata"]:
-                            print(error["metadata"]["raw"])
-                    else:
-                        print(response.json())
-                    return dict(
-                        error=f"Error: {response.status_code} - {response.text}"
-                    )
-                content = response.json()["choices"][0]["message"]["content"].strip()
-
-                # Parse the JSON response
-                try:
-                    result = json.loads(content)
-                    # Validate the response has the required fields
-                    if "assistant_is_next" in result and "date" in result:
-                        return self._evaluate_output(result, now)
-                    else:
-                        return dict(error="Invalid response format from LLM")
-                except json.JSONDecodeError:
-                    # If the response isn't valid JSON, try to extract it using regex
-                    print("WARNING: LLM did not return JSON, trying with regex...")
-                    assistant_is_next_pattern = (
-                        r'"assistant_is_next"\s*:\s*(true|false)'
-                    )
-                    date_pattern = r'"date"\s*:\s*"([^"]+)"'
-
-                    assistant_match = re.search(
-                        assistant_is_next_pattern, content, re.IGNORECASE
-                    )
-                    date_match = re.search(date_pattern, content)
-
-                    if assistant_match and date_match:
-                        result = {
-                            "assistant_is_next": assistant_match.group(1).lower()
-                            == "true",
-                            "date": date_match.group(1),
-                        }
-                        return self._evaluate_output(result, now)
-                    else:
-                        print("ERROR: Also regex failed to match LLM response:")
-                        print(textwrap.indent(content, "    "))
-                        return dict(error="Failed to parse LLM response")
-            else:
-                return dict(error=f"Error: {response.status_code} - {response.text}")
-
->>>>>>> Stashed changes
         except Exception as e:
             return dict(error=f"OpenRouter Error: {str(e)}")
 
@@ -781,13 +693,7 @@ class ResponseScheduler(LLMHandler):
             print(f"Error: no message/content found in LLM response {response.json()["choices"][0]}")
             return dict(error=f"Error: {e}")
 
-        # Count input/output tokens, calculate LLM cost
-        num_input_tokens, num_output_tokens, cost = self.get_cost_estimate(model_id, [system_prompt, user_prompt], content)
-        print(f"Tokens in: {num_input_tokens}, out: {num_output_tokens}, total cost: (USD) {cost:.6f} (estimate)")
-        generation_id = response.json().get("id", None)
-        if generation_id:
-            num_input_tokens, num_output_tokens, cost = self.get_cost(generation_id)
-            print(f"Tokens in: {num_input_tokens}, out: {num_output_tokens}, total cost: (USD) {cost:.6f} (real)")
+        self.show_usage(model_id, [system_prompt, user_prompt], content, response)
 
         # Parse the JSON structured output
         try:
@@ -873,15 +779,8 @@ class ResponseScheduler(LLMHandler):
                 )  # DEBUG
                 return {"response_is_due": True, "probability": 1.0}
             else:
-<<<<<<< Updated upstream
                 print(f"Deterministic logic: min_ahead ({min_ahead}) + patience ({patience}) > 0, reponse is not due.")  # DEBUG
                 return {"response_is_due": False, "probability": 0.0, "scheduled_for": predicted_date}
-=======
-                print(
-                    f"Deterministic logic: min_ahead ({min_ahead}) + patience ({patience}) > 0, reponse is not due."
-                )  # DEBUG
-                return {"response_is_due": False, "probability": 0.0}
->>>>>>> Stashed changes
 
         except Exception as e:
             return dict(error=f"Error validating output: {str(e)}")
@@ -944,19 +843,19 @@ class EmailModerator(LLMHandler):
         except Exception as e:
             return False, f"Error during moderation: {str(e)}"
 
-<<<<<<< Updated upstream
-    def generate_response(self, user_email_address, bot_address, email_subject, emails):
-        """Generate a chat completion with the role of an Accountability Partner."""
-=======
 
 class ResponseGenerator(LLMHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def generate_response(self, email_content, subject, sender_name):
-        """Generate an intelligent response using OpenRouter's free LLM."""
->>>>>>> Stashed changes
-        system_prompt = """You are an accountability partner bot that helps users achieve their goals through email communication.
+    def generate_response(self, emails, bot_address, user_name="User", bot_name="Accountability Partner", model_id=None):
+        """Generate a chat completion with the role of an Accountability Partner."""
+        model_id = model_id or self.model_id
+
+        system_prompt = f"""
+        You are an accountability partner that helps users achieve their goals through email communication.
+        Your name is {bot_name}.
+        Call the user {user_name} or whatever they prefer.
         Your responses should be:
         1. Encouraging and supportive
         2. Focused on the user's goals and progress
@@ -966,26 +865,31 @@ class ResponseGenerator(LLMHandler):
 
         If the email is a "start" message, welcome the user and acknowledge their goal.
         If it's an update, provide encouragement and ask about next steps or challenges.
+        Only write the body text of the email, no headers, no footers, no PS.
         """
+        system_prompt = textwrap.dedent(system_prompt)
 
         messages = [{"role": "system", "content": system_prompt}]
-        messages.extend(format_emails(emails, style='chat'))
+        chat_formatted_emails = format_emails(emails, style='chat', bot_address=bot_address)
+        for msg in chat_formatted_emails:
+            assert isinstance(msg, dict)
+            assert 'role' in msg
+            assert 'content' in msg
+        messages.extend(chat_formatted_emails)
 
+        print("Messages sent to response agent:")
+        for i, msg in enumerate(messages):
+            print(f'{i:03} {msg["role"]}:')
+            print(wrap_indent(msg["content"], width=80, indentation=8))
+
+        assert 'chat' in self.openrouter_base_url, f'base url not for chat: {self.openrouter_base_url}'
         try:
             response = requests.post(
                 self.openrouter_base_url,
                 headers=self.openrouter_headers,
                 json={
-<<<<<<< Updated upstream
-                    "model": "mistralai/mistral-7b-instruct",  # Free model
+                    "model": model_id,
                     "messages": messages,
-=======
-                    "model": self.model_id,  # Free model
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
->>>>>>> Stashed changes
                     "temperature": 0.7,  # Balanced between creativity and consistency
                 },
                 timeout=self.llm_timeout,
@@ -993,6 +897,7 @@ class ResponseGenerator(LLMHandler):
 
             if response.status_code == 200:
                 content = response.json()["choices"][0]["message"]["content"].strip()
+                self.show_usage(model_id, messages, content, response)
                 return content
             else:
                 print(f"Error generating response: {response.status_code} - {response.text}")
