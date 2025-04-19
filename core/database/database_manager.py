@@ -87,7 +87,7 @@ class DatabaseManager:
 
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        
+
         try:
             for query in create_tables_queries:
                 cursor.execute(query)
@@ -106,7 +106,7 @@ class DatabaseManager:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row  # Return rows as dictionary-like objects
         cursor = conn.cursor()
-        
+
         try:
             if params:
                 cursor.execute(query, params)
@@ -133,25 +133,22 @@ class DatabaseManager:
         self.execute_query(query, tuple(data.values()))
 
 
-
+# ================================
+# Section for testing
+# ================================
 if __name__ == "__main__":
+
     db_manager = DatabaseManager("test.db")
 
-    test_query = """
-            SELECT name FROM sqlite_master 
-            WHERE type='table' AND name=?
-        """
-    
-    result = db_manager.execute_query(test_query, ("users",))
-  
-
-
+    # ================================
+    # Test data for the database
+    # ================================
 
     # test_emails = [
     #     # Rainer's cactus care story - April 1
     #     {
     #         "message_id": "msg1@test.com",
-    #         "date": "2025-04-01 18:23:00", 
+    #         "date": "2025-04-01 18:23:00",
     #         "from_email": "rainer.grebin@cloud-g.com",
     #         "to_email": "acp@acp.com",
     #         "subject": "Cactus care",
@@ -163,7 +160,7 @@ if __name__ == "__main__":
     #     },
     #     {
     #         "message_id": "msg2@test.com",
-    #         "date": "2025-04-01 19:23:00", 
+    #         "date": "2025-04-01 19:23:00",
     #         "from_email": "acp@acp.com",
     #         "to_email": "rainer.grebin@cloud-g.com",
     #         "subject": "Cactus care",
@@ -176,7 +173,7 @@ if __name__ == "__main__":
     #     # Rainer's cactus care story - April 2
     #     {
     #         "message_id": "msg3@test.com",
-    #         "date": "2025-04-02 11:23:00", 
+    #         "date": "2025-04-02 11:23:00",
     #         "from_email": "rainer.grebin@cloud-g.com",
     #         "to_email": "acp@acp.com",
     #         "subject": "Cactus care",
@@ -188,7 +185,7 @@ if __name__ == "__main__":
     #     },
     #     {
     #         "message_id": "msg4@test.com",
-    #         "date": "2025-04-02 11:53:00", 
+    #         "date": "2025-04-02 11:53:00",
     #         "from_email": "acp@acp.com",
     #         "to_email": "rainer.grebin@cloud-g.com",
     #         "subject": "Cactus care",
@@ -201,7 +198,7 @@ if __name__ == "__main__":
     #     # Viktorija's Estonian learning story - April 2
     #     {
     #         "message_id": "msg8@test.com",
-    #         "date": "2025-04-02 16:49:00", 
+    #         "date": "2025-04-02 16:49:00",
     #         "from_email": "zezere@gmail.com",
     #         "to_email": "acp@acp.com",
     #         "subject": "Estonian language",
@@ -213,7 +210,7 @@ if __name__ == "__main__":
     #     },
     #     {
     #         "message_id": "msg9@test.com",
-    #         "date": "2025-04-02 17:09:00", 
+    #         "date": "2025-04-02 17:09:00",
     #         "from_email": "acp@acp.com",
     #         "to_email": "zezere@gmail.com",
     #         "subject": "Estonian language",
@@ -225,7 +222,7 @@ if __name__ == "__main__":
     #     },
     #     {
     #         "message_id": "msg10@test.com",
-    #         "date": "2025-04-02 19:39:00", 
+    #         "date": "2025-04-02 19:39:00",
     #         "from_email": "zezere@gmail.com",
     #         "to_email": "acp@acp.com",
     #         "subject": "Estonian language",
@@ -237,7 +234,7 @@ if __name__ == "__main__":
     #     },
     #     {
     #         "message_id": "msg11@test.com",
-    #         "date": "2025-04-02 20:19:00", 
+    #         "date": "2025-04-02 20:19:00",
     #         "from_email": "acp@acp.com",
     #         "to_email": "zezere@gmail.com",
     #         "subject": "Estonian language",
@@ -250,7 +247,7 @@ if __name__ == "__main__":
     #     # Viktorija's Estonian learning story - April 3
     #     {
     #         "message_id": "msg12@test.com",
-    #         "date": "2025-04-03 08:15:00", 
+    #         "date": "2025-04-03 08:15:00",
     #         "from_email": "zezere@gmail.com",
     #         "to_email": "acp@acp.com",
     #         "subject": "Estonian language",
@@ -262,7 +259,7 @@ if __name__ == "__main__":
     #     },
     #     {
     #         "message_id": "msg13@test.com",
-    #         "date": "2025-04-03 08:30:00", 
+    #         "date": "2025-04-03 08:30:00",
     #         "from_email": "acp@acp.com",
     #         "to_email": "zezere@gmail.com",
     #         "subject": "Estonian language",
@@ -274,7 +271,7 @@ if __name__ == "__main__":
     #     },
     #     {
     #         "message_id": "msg14@test.com",
-    #         "date": "2025-04-03 10:00:00", 
+    #         "date": "2025-04-03 10:00:00",
     #         "from_email": "zezere@gmail.com",
     #         "to_email": "acp@acp.com",
     #         "subject": "Estonian language",
@@ -287,7 +284,7 @@ if __name__ == "__main__":
     #     # Oleg's fish tank story - April 3
     #     {
     #         "message_id": "msg19@test.com",
-    #         "date": "2025-04-03 11:40:00", 
+    #         "date": "2025-04-03 11:40:00",
     #         "from_email": "olesha38@gmail.com",
     #         "to_email": "acp@acp.com",
     #         "subject": "Fish tank",
@@ -299,7 +296,7 @@ if __name__ == "__main__":
     #     },
     #     {
     #         "message_id": "msg20@test.com",
-    #         "date": "2025-04-03 12:15:00", 
+    #         "date": "2025-04-03 12:15:00",
     #         "from_email": "acp@acp.com",
     #         "to_email": "olesha38@gmail.com",
     #         "subject": "Fish tank",
@@ -311,7 +308,7 @@ if __name__ == "__main__":
     #     },
     #     {
     #         "message_id": "msg21@test.com",
-    #         "date": "2025-04-03 15:15:00", 
+    #         "date": "2025-04-03 15:15:00",
     #         "from_email": "olesha38@gmail.com",
     #         "to_email": "acp@acp.com",
     #         "subject": "Fish tank",
@@ -323,7 +320,7 @@ if __name__ == "__main__":
     #     },
     #     {
     #         "message_id": "msg22@test.com",
-    #         "date": "2025-04-03 16:05:00", 
+    #         "date": "2025-04-03 16:05:00",
     #         "from_email": "acp@acp.com",
     #         "to_email": "olesha38@gmail.com",
     #         "subject": "Fish tank",
@@ -335,7 +332,7 @@ if __name__ == "__main__":
     #     },
     #     {
     #         "message_id": "msg23@test.com",
-    #         "date": "2025-04-03 18:05:00", 
+    #         "date": "2025-04-03 18:05:00",
     #         "from_email": "olesha38@gmail.com",
     #         "to_email": "acp@acp.com",
     #         "subject": "Fish tank",
@@ -347,7 +344,7 @@ if __name__ == "__main__":
     #     },
     #     {
     #         "message_id": "msg24@test.com",
-    #         "date": "2025-04-03 18:15:00", 
+    #         "date": "2025-04-03 18:15:00",
     #         "from_email": "acp@acp.com",
     #         "to_email": "olesha38@gmail.com",
     #         "subject": "Fish tank",
@@ -359,7 +356,7 @@ if __name__ == "__main__":
     #     },
     #     {
     #         "message_id": "msg25@test.com",
-    #         "date": "2025-04-03 19:15:00", 
+    #         "date": "2025-04-03 19:15:00",
     #         "from_email": "olesha38@gmail.com",
     #         "to_email": "acp@acp.com",
     #         "subject": "Fish tank",
@@ -371,7 +368,7 @@ if __name__ == "__main__":
     #     },
     #     {
     #         "message_id": "msg26@test.com",
-    #         "date": "2025-04-03 18:00:00", 
+    #         "date": "2025-04-03 18:00:00",
     #         "from_email": "acp@acp.com",
     #         "to_email": "olesha38@gmail.com",
     #         "subject": "Fish tank",
@@ -384,7 +381,7 @@ if __name__ == "__main__":
     #     # Rainer's cactus care story - April 4
     #     {
     #         "message_id": "msg5@test.com",
-    #         "date": "2025-04-04 15:26:00", 
+    #         "date": "2025-04-04 15:26:00",
     #         "from_email": "rainer.grebin@cloud-g.com",
     #         "to_email": "acp@acp.com",
     #         "subject": "Cactus care",
@@ -396,7 +393,7 @@ if __name__ == "__main__":
     #     },
     #     {
     #         "message_id": "msg6@test.com",
-    #         "date": "2025-04-04 15:51:00", 
+    #         "date": "2025-04-04 15:51:00",
     #         "from_email": "acp@acp.com",
     #         "to_email": "rainer.grebin@cloud-g.com",
     #         "subject": "Cactus care",
@@ -409,7 +406,7 @@ if __name__ == "__main__":
     #     # Viktorija's Estonian learning story - April 4
     #     {
     #         "message_id": "msg15@test.com",
-    #         "date": "2025-04-04 07:00:00", 
+    #         "date": "2025-04-04 07:00:00",
     #         "from_email": "acp@acp.com",
     #         "to_email": "zezere@gmail.com",
     #         "subject": "Estonian language",
@@ -422,7 +419,7 @@ if __name__ == "__main__":
     #     # Oleg's fish tank story - April 4
     #     {
     #         "message_id": "msg27@test.com",
-    #         "date": "2025-04-04 05:00:00", 
+    #         "date": "2025-04-04 05:00:00",
     #         "from_email": "acp@acp.com",
     #         "to_email": "olesha38@gmail.com",
     #         "subject": "Fish tank",
@@ -434,7 +431,7 @@ if __name__ == "__main__":
     #     },
     #     {
     #         "message_id": "msg29@test.com",
-    #         "date": "2025-04-04 03:00:00", 
+    #         "date": "2025-04-04 03:00:00",
     #         "from_email": "olesha38@gmail.com",
     #         "to_email": "acp@acp.com",
     #         "subject": "Fish tank",
@@ -446,7 +443,7 @@ if __name__ == "__main__":
     #     },
     #     {
     #         "message_id": "msg30@test.com",
-    #         "date": "2025-04-04 03:20:00", 
+    #         "date": "2025-04-04 03:20:00",
     #         "from_email": "acp@acp.com",
     #         "to_email": "olesha38@gmail.com",
     #         "subject": "Fish tank",
@@ -458,7 +455,7 @@ if __name__ == "__main__":
     #     },
     #     {
     #         "message_id": "msg31@test.com",
-    #         "date": "2025-04-04 05:20:00", 
+    #         "date": "2025-04-04 05:20:00",
     #         "from_email": "olesha38@gmail.com",
     #         "to_email": "acp@acp.com",
     #         "subject": "Fish tank",
@@ -470,7 +467,7 @@ if __name__ == "__main__":
     #     },
     #     {
     #         "message_id": "msg32@test.com",
-    #         "date": "2025-04-04 05:50:00", 
+    #         "date": "2025-04-04 05:50:00",
     #         "from_email": "acp@acp.com",
     #         "to_email": "olesha38@gmail.com",
     #         "subject": "Fish tank",
@@ -482,7 +479,7 @@ if __name__ == "__main__":
     #     },
     #     {
     #         "message_id": "msg28@test.com",
-    #         "date": "2025-04-04 18:00:00", 
+    #         "date": "2025-04-04 18:00:00",
     #         "from_email": "acp@acp.com",
     #         "to_email": "olesha38@gmail.com",
     #         "subject": "Fish tank",
@@ -495,7 +492,7 @@ if __name__ == "__main__":
     #     # Viktorija's Estonian learning story - April 5-7
     #     {
     #         "message_id": "msg16@test.com",
-    #         "date": "2025-04-05 07:00:00", 
+    #         "date": "2025-04-05 07:00:00",
     #         "from_email": "acp@acp.com",
     #         "to_email": "zezere@gmail.com",
     #         "subject": "Estonian language",
@@ -507,7 +504,7 @@ if __name__ == "__main__":
     #     },
     #     {
     #         "message_id": "msg17@test.com",
-    #         "date": "2025-04-06 07:00:00", 
+    #         "date": "2025-04-06 07:00:00",
     #         "from_email": "acp@acp.com",
     #         "to_email": "zezere@gmail.com",
     #         "subject": "Estonian language",
@@ -519,7 +516,7 @@ if __name__ == "__main__":
     #     },
     #     {
     #         "message_id": "msg18@test.com",
-    #         "date": "2025-04-07 07:00:00", 
+    #         "date": "2025-04-07 07:00:00",
     #         "from_email": "acp@acp.com",
     #         "to_email": "zezere@gmail.com",
     #         "subject": "Estonian language",
@@ -532,7 +529,7 @@ if __name__ == "__main__":
     #     # New email for Viktorija's vacation notice
     #     {
     #         "message_id": "msg33@test.com",
-    #         "date": "2025-04-07 20:44:00", 
+    #         "date": "2025-04-07 20:44:00",
     #         "from_email": "zezere@gmail.com",
     #         "to_email": "acp@acp.com",
     #         "subject": "Estonian language",
@@ -545,7 +542,7 @@ if __name__ == "__main__":
     #     # Rainer's cactus care story - April 7
     #     {
     #         "message_id": "msg7@test.com",
-    #         "date": "2025-04-07 20:53:00", 
+    #         "date": "2025-04-07 20:53:00",
     #         "from_email": "rainer.grebin@cloud-g.com",
     #         "to_email": "acp@acp.com",
     #         "subject": "Cactus care",
@@ -628,13 +625,15 @@ if __name__ == "__main__":
 
     # for conversation in test_conversations:
     #     db_manager.insert_data("conversations", conversation)
-    
+
     # for user in test_users:
     #     db_manager.insert_data("users", user)
+
+    # ================================
+    # How to use Row object
+    # ================================
 
     # print("\nAs dictionary:", dict(row))  # Print as dictionary
     # print("By column name:", row['name'])  # Access by column name
     # print("By index:", row[0])  # Access by index
     # print("Column names:", row.keys())  # Print all column names
-
-

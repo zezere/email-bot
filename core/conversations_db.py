@@ -233,6 +233,7 @@ class ConversationsDB:
             print(f"Conversation {conversation_id} has no unprocessed emails.")
             return False
 
+    # IGNORE
     def get_all_conversations(self) -> List[Dict[str, Any]]:
         query = """
         SELECT
@@ -587,6 +588,7 @@ class ConversationsDB:
         return True
 
 
+# IGNORE
 if __name__ == "__main__":
     conversations_db = ConversationsDB()
     conversations_db.check_db_status()
