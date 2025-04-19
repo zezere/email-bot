@@ -1,0 +1,73 @@
+Meet Meeting 
+Sun, 13 Apr 2025
+
+Summary:
+
+The discussion centered on the evaluation of various AI tools and accountability applications, with Viktorija expressing concerns about inaccuracies in the tools she reviewed and suggesting a more comprehensive analysis. Ana shared her negative experiences with different AI platforms, highlighting issues such as unresponsive features and inadequate course readiness, ultimately favoring GPT over the alternatives. The group acknowledged the challenges in assessing the quality of these tools, with Viktorija noting that the selected options were the closest to their product offerings.
+
+Petra provided insights into accountability apps, expressing skepticism about specific applications like Dewey and Mind Kelly due to their unclear terms and confusing interfaces. The group recognized the need for more information on these apps and discussed the difficulties in creating a successful accountability tool. Viktorija pointed out that their email-focused project faces minimal competition, while Ana raised concerns about user expectations for immediate responses, advocating for simplicity in user interfaces to prevent frustration. Petra added that some competitors complicate their offerings, which could confuse potential users.
+
+Survey results revealed mixed interest in email for accountability partnerships, with many preferring platforms like WhatsApp. Petra noted that while the app market is saturated, there is still potential for new entrants to learn from existing successes and failures. Ana shared her husband's project involving an AI accountability partner on WhatsApp, reinforcing the idea that instant communication could enhance user engagement. The group discussed the importance of exploring various communication methods and the potential for a product that improves upon current solutions.
+
+The conversation also touched on the evolving landscape of accountability apps, with Petra and Ana discussing user preferences for AI interactions versus traditional methods. They recognized the need for user-friendly app designs and effective marketing strategies, with Viktorija suggesting cost-effective promotion through forums and social media. Marius emphasized focusing on a niche market rather than pursuing large shares, proposing the development of a landing page to attract users. The group concluded by discussing survey strategies to gather relevant data on user experiences and preferences, aiming to identify essential features for their app's initial implementation.
+
+
+Chapters & Topics:
+
+AI Tool Evaluations and Experiences
+Viktorija reflected on her use of AI tools, mentioning that some did not provide accurate information and that she would review them more thoroughly in the future. Ana detailed her experiences with several AIs, indicating that none offered significant value, and she encountered issues such as unresponsive features and lack of content in courses. She emphasized that even for free, she would not find them worthwhile.
+
+Accountability Apps Discussion
+Petra highlighted the existence of numerous specialized accountability apps but focused on more general ones that appeared in search results. She raised concerns about the Dewey app's lack of terms and conditions and criticized the Mind Kelly app for its unclear offerings and pricing. Ana and Viktorija contributed to the discussion by reflecting on the quality of these apps and the challenges in determining their effectiveness.
+
+Discussion on Email Competitiveness and User Experience
+Viktorija and Petra discussed the absence of significant competition for their email-based initiative, with Petra highlighting that many competitors complicate their offerings to create monetization tiers. Ana Crosatto Thomsen expressed concerns about the need for immediate responses in a fast-paced world, questioning whether email could effectively meet this demand. She emphasized the importance of simplicity in user experience, suggesting that complicated systems deter users.
+
+Market Analysis and Communication Strategies
+Petra shared insights from a survey indicating a modest interest in email as a communication method, while suggesting that platforms like WhatsApp could be more accessible for users. Viktorija highlighted that having competitors can provide valuable lessons and that entering a crowded market can still yield success if approached strategically. Both agreed on the potential of leveraging existing platforms for their accountability project.
+
+Survey Results Discussion
+Petra shared insights from the survey, indicating a 50-50 split on whether participants had ever had an accountability partner. She observed that many respondents were unfamiliar with the term, while others showed a range of interest in having an accountability partner. Viktorija suggested reaching out to those who rated their need for an accountability partner highly for potential user testing.
+
+Discussion on Accountability Apps and User Preferences
+The conversation centered on the potential of online accountability apps to replace human partners, with Petra sharing insights from a survey that revealed mixed opinions on the matter. Ana Crosatto Thomsen pointed out that many users find existing apps too complicated, stressing the importance of user-friendly design. Petra also mentioned the challenges of marketing these apps, particularly the high costs of advertising.
+* Exploration of marketing strategies for the accountability partner app.
+
+Discussion on AI Accountability Partner and Market Strategy
+Petra noted that many people struggle to understand the concept of AI as an accountability partner, but acknowledged the growing acceptance of AI in the market. Marius highlighted the group's small size and low costs, suggesting they focus on a niche market rather than competing on a larger scale. He proposed creating a landing page to attract users and mentioned the advantages of their AI solution over traditional options.
+
+Survey Insights and Next Steps
+Viktorija discussed the need for more reliable data by asking users about their past experiences with accountability partners and relevant tools. She expressed interest in exploring better survey tools than Google Forms to gather this information effectively. Ana highlighted the necessity of collecting more responses to ensure the relevance of the data for decision-making.
+* Analysis of competitor apps and their functionalities.
+
+Exploring Email-Only Accountability Partnerships
+Viktorija presented her findings on email-only accountability partners, mentioning that she used the Gemini deep research tool to explore existing literature on the topic. She highlighted the potential for additional research methods, such as analyzing discussions on forums like Read.AI. Marius expressed interest in how this information could improve their accountability partner system, while Petra noted a specific thread on Read.AI related to AI and accountability partners.
+* Discussion on the effectiveness of different survey tools for gathering data.
+
+Survey Strategies and Usability Testing
+Petra proposed using a survey swap service to collect responses, noting that it operates on a karma system where time spent answering surveys earns credits. Viktorija pointed out the value of surveys in obtaining direct contacts for further discussions. Ana suggested creating a shared email account to facilitate participation without using personal emails, which Petra found to be a good idea.
+
+Discussion on User Testing and Project Updates
+Petra proposed creating a survey to collect opinions on hotel names, drawing from her experience with similar initiatives. Viktorija highlighted Rainer's participation in a user testing platform that could facilitate A-B testing for design ideas. They also addressed the importance of tagging changes in shared documents to improve communication and tracking.
+* Planning for the next steps in product development and user testing.
+
+
+Action Items:
+
+* Viktorija will create a simple landing page with information about the product to gauge interest.
+* Petra will explore different survey tools that allow for better branching and user experience.
+* Viktorija will send the research document to the team for review and analysis.
+* Petra will compile a more detailed survey based on the feedback received and share it with the team.
+* Ana Crosatto Thomsen will check the testing for the LLM project and ensure it is functioning correctly.
+
+
+Key Questions:
+
+* How can the team effectively market the accountability partner app?
+* What specific features should be prioritized for the accountability partner app?
+* How many surveys need to be answered to participate in user testing?
+
+
+Notepad:
+
+* No notes
