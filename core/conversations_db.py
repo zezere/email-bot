@@ -15,6 +15,7 @@ from core.database.database_manager import DatabaseManager
 class ConversationsDB:
     def __init__(self):
         self.db = DatabaseManager("test.db")
+        self.bot_emails = ["acp@acp.com", "accountability.partner.ai@nldr-ou.com"]
 
     def _to_dict(
         self, result: Union[sqlite3.Row, List[sqlite3.Row], None]
@@ -36,7 +37,7 @@ class ConversationsDB:
         query = "SELECT * FROM emails WHERE conversation_id = ? ORDER BY date"
         return self.db.execute_query(query, (conversation_id,))
 
-    # TODO: needs finishing. See comments inside the function
+    # TODO: tracking needs improvement. See comments inside the function
     def _start_tracking(self, conversation_ids: List[int], source: str) -> None:
         """Start tracking processes for given conversations if they don't have active processes.
 
@@ -233,21 +234,18 @@ class ConversationsDB:
             print(f"Conversation {conversation_id} has no unprocessed emails.")
             return False
 
-    # IGNORE
+    # Not used for Bot to work but may be useful for testing
     def get_all_conversations(self) -> List[Dict[str, Any]]:
         query = """
         SELECT
             c.id AS conversation_id,
+            u.name AS user_name,
             c.conversation_subject,
             e.id AS email_id,
             e.date,
-            u.name AS user_name,
             e.from_email,
             e.to_email,
-            e.subject,
-            e.body,
-            e.analyzed,
-            e.processed
+            e.body
         FROM
             conversations c
             LEFT JOIN users u ON c.user_id = u.id
@@ -282,15 +280,19 @@ class ConversationsDB:
             # Add emails to the conversation
             for row in group_list:
                 if row["email_id"]:  # Only add if email exists
+                    role = "user"
+                    if row["from_email"] in self.bot_emails:
+                        role = "assistant"
+                    elif row["to_email"] in self.bot_emails:
+                        role = "user"
+                    else:
+                        print(f"Email {row['email_id']} has no bot email")
+                        role = "unknown"
                     email = {
                         "id": row["email_id"],
-                        "date": row["date"],
-                        "from_email": row["from_email"],
-                        "to_email": row["to_email"],
-                        "subject": row["subject"],
+                        "date": datetime.strptime(row["date"], "%Y-%m-%d %H:%M:%S"),
+                        "role": role,
                         "body": row["body"],
-                        "analyzed": row["analyzed"],
-                        "processed": row["processed"],
                     }
                     conversation["emails"].append(email)
 
@@ -321,21 +323,18 @@ class ConversationsDB:
             )
         return False
 
-    # TODO: needs finishing. See comments inside the function
+    # TODO: tracking needs improvement. See comments inside the function
     def get_unanalyzed_conversations(self, track: bool) -> List[Dict[str, Any]]:
         query = """
         SELECT
             c.id AS conversation_id,
+            u.name AS user_name,
             c.conversation_subject,
             e.id AS email_id,
             e.date,
-            u.name AS user_name,
             e.from_email,
             e.to_email,
-            e.subject,
-            e.body,
-            e.analyzed,
-            e.processed
+            e.body
         FROM
             conversations c
             LEFT JOIN users u ON c.user_id = u.id
@@ -344,7 +343,7 @@ class ConversationsDB:
             c.id IN (
                 SELECT DISTINCT conversation_id
                 FROM emails
-                WHERE analyzed =0 
+                WHERE analyzed = 0 
                 )
         ORDER BY date
         """
@@ -374,15 +373,19 @@ class ConversationsDB:
             # Add emails to the conversation
             for row in group_list:
                 if row["email_id"]:  # Only add if email exists
+                    role = "user"
+                    if row["from_email"] in self.bot_emails:
+                        role = "assistant"
+                    elif row["to_email"] in self.bot_emails:
+                        role = "user"
+                    else:
+                        print(f"Email {row['email_id']} has no bot email")
+                        role = "unknown"
                     email = {
                         "id": row["email_id"],
-                        "date": row["date"],
-                        "from_email": row["from_email"],
-                        "to_email": row["to_email"],
-                        "subject": row["subject"],
+                        "date": datetime.strptime(row["date"], "%Y-%m-%d %H:%M:%S"),
+                        "role": role,
                         "body": row["body"],
-                        "analyzed": row["analyzed"],
-                        "processed": row["processed"],
                     }
                     conversation["emails"].append(email)
 
@@ -398,18 +401,15 @@ class ConversationsDB:
 
     def get_conversations_needing_reply(self) -> List[Dict[str, Any]]:
         query = """
-            SELECT
+        SELECT
             c.id AS conversation_id,
+            u.name AS user_name,
             c.conversation_subject,
             e.id AS email_id,
             e.date,
-            u.name AS user_name,
             e.from_email,
             e.to_email,
-            e.subject,
-            e.body,
-            e.analyzed,
-            e.processed
+            e.body
         FROM
             conversations c
             LEFT JOIN users u ON c.user_id = u.id
@@ -443,15 +443,19 @@ class ConversationsDB:
             # Add emails to the conversation
             for row in group_list:
                 if row["email_id"]:  # Only add if email exists
+                    role = "user"
+                    if row["from_email"] in self.bot_emails:
+                        role = "assistant"
+                    elif row["to_email"] in self.bot_emails:
+                        role = "user"
+                    else:
+                        print(f"Email {row['email_id']} has no bot email")
+                        role = "unknown"
                     email = {
                         "id": row["email_id"],
-                        "date": row["date"],
-                        "from_email": row["from_email"],
-                        "to_email": row["to_email"],
-                        "subject": row["subject"],
+                        "date": datetime.strptime(row["date"], "%Y-%m-%d %H:%M:%S"),
+                        "role": role,
                         "body": row["body"],
-                        "analyzed": row["analyzed"],
-                        "processed": row["processed"],
                     }
                     conversation["emails"].append(email)
 
@@ -464,16 +468,13 @@ class ConversationsDB:
         query = """
         SELECT
             c.id AS conversation_id,
+            u.name AS user_name,
             c.conversation_subject,
             e.id AS email_id,
             e.date,
-            u.name AS user_name,
             e.from_email,
             e.to_email,
-            e.subject,
-            e.body,
-            e.analyzed,
-            e.processed
+            e.body
         FROM
             conversations c
             LEFT JOIN users u ON c.user_id = u.id
@@ -512,15 +513,19 @@ class ConversationsDB:
             # Add emails to the conversation
             for row in group_list:
                 if row["email_id"]:  # Only add if email exists
+                    role = "user"
+                    if row["from_email"] in self.bot_emails:
+                        role = "assistant"
+                    elif row["to_email"] in self.bot_emails:
+                        role = "user"
+                    else:
+                        print(f"Email {row['email_id']} has no bot email")
+                        role = "unknown"
                     email = {
                         "id": row["email_id"],
-                        "date": row["date"],
-                        "from_email": row["from_email"],
-                        "to_email": row["to_email"],
-                        "subject": row["subject"],
+                        "date": datetime.strptime(row["date"], "%Y-%m-%d %H:%M:%S"),
+                        "role": role,
                         "body": row["body"],
-                        "analyzed": row["analyzed"],
-                        "processed": row["processed"],
                     }
                     conversation["emails"].append(email)
 
@@ -591,7 +596,8 @@ class ConversationsDB:
 # IGNORE
 if __name__ == "__main__":
     conversations_db = ConversationsDB()
-    conversations_db.check_db_status()
+    # conversations_db.check_db_status()
+    conversations = conversations_db.get_scheduled_conversations()
 
     for conv in conversations:
         print(f"\nConversation {conv['conversation_id']}")
