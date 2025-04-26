@@ -26,17 +26,6 @@ class ConversationsDB:
             return [dict(zip(row.keys(), row)) for row in result]
         return dict(zip(result.keys(), result))
 
-    # ???
-    def _get_conversation(self, conversation_id: int) -> Optional[dict]:
-        query = "SELECT * FROM conversations WHERE id = ?"
-        result = self.db.execute_query(query, (conversation_id,))
-        return result[0] if result else None
-
-    # ???
-    def _get_conversation_emails(self, conversation_id: int) -> List[dict]:
-        query = "SELECT * FROM emails WHERE conversation_id = ? ORDER BY date"
-        return self.db.execute_query(query, (conversation_id,))
-
     # TODO: tracking needs improvement. See comments inside the function
     def _start_tracking(self, conversation_ids: List[int], source: str) -> None:
         """Start tracking processes for given conversations if they don't have active processes.
@@ -178,6 +167,7 @@ class ConversationsDB:
             WHERE id = ? 
         """
         result = self.db.execute_query(query, (conversation_id,))
+        # TODO: create a separate function to do checks and return data and True or False
         if len(result) == 1:
             self.db.update_data(
                 "conversations",
@@ -194,6 +184,45 @@ class ConversationsDB:
             return False
         else:
             print(f"Conversation {conversation_id} is not in the database.")
+            return False
+
+    def _save_reply(self, conversation_id: int, reply_message: str) -> None:
+        """Save the reply in the prepared_replies table.
+        For the email subject, it will use the conversation subject.
+        If there is more than one conversation with the same id, it will print out the existing conversations and return False.
+        If the conversation is not in the database, it will print out a message and return False.
+
+        Args:
+            conversation_id: The ID of the conversation to save the reply
+            reply_message: The reply message to save
+        Returns:
+            True if the reply was saved successfully, False if there was an error
+        """
+        query = """
+            SELECT DISTINCT conversation_subject FROM conversations 
+            WHERE id = ? 
+        """
+        result = self.db.execute_query(query, (conversation_id,))
+        # TODO: create a separate function to do checks and return data and True or False
+        if len(result) == 1:
+            conversation_subject = result[0]["conversation_subject"]
+            data = {
+                "conversation_id": conversation_id,
+                "reply_subject": conversation_subject,
+                "reply_message": reply_message,
+                "timestamp": datetime.now().isoformat(),
+            }
+            self.db.insert_data("prepared_replies", data)
+            return True
+        elif len(result) > 1:
+            print(f"Conversation {conversation_id} has more than one conversation.")
+            for row in result:
+                print(
+                    f"  Conversation ID: {row['id']}, Subject: {row['conversation_subject']}"
+                )
+            return False
+        else:
+            print(f"Conversation {conversation_id} has no conversation subject.")
             return False
 
     def _update_emails_analyzed_flags(
@@ -463,8 +492,10 @@ class ConversationsDB:
 
         return conversations
 
-    # TODO: needs start tracking
-    def get_scheduled_conversations(self) -> List[Dict[str, Any]]:
+    # TODO: tracking needs improvement. See comments inside the function
+    # TODO: this function also needs to return awareness time and if a conversation
+    # has been replied to in a previous loop, then return the reply as well
+    def get_scheduled_conversations(self, track: bool) -> List[Dict[str, Any]]:
         query = """
         SELECT
             c.id AS conversation_id,
@@ -531,6 +562,12 @@ class ConversationsDB:
 
             conversations.append(conversation)
 
+        # Start tracking if requested
+        if track:
+            conversation_ids = [conv["conversation_id"] for conv in conversations]
+            # TODO: get the outcome of starting tracking, it should be True
+            self._start_tracking(conversation_ids, source="step3")
+
         return conversations
 
     def update_data_after_step1(
@@ -545,10 +582,10 @@ class ConversationsDB:
         2. Update reply needed flag in conversations table
         3. Update emails analyzed flags (for all emails in that conversation) in emails table
         4. If reply is not needed, then we're done with this conversation and we:
-           - Update emails processed flags (for all emails in that conversation) in emails table
+            - Update emails processed flags (for all emails in that conversation) in emails table
             - Update conversation process status to "completed"
-           If reply is needed, then process is not complete yet, so we:
-           - Update converastion process status to "analyzed" (meaning, waiting to be "processed")
+            If reply is needed, then process is not complete yet, so we:
+            - Update converastion process status to "analyzed" (meaning, waiting to be "processed")
 
         Args:
             conversation_id: The ID of the conversation to update
@@ -591,6 +628,93 @@ class ConversationsDB:
             return False
             # IMPORTANT NOTE: if one of updates failed, we need to roll back all the updates
         return True
+
+    def update_data_after_step2(self, conversation_id: int, reply_message: str) -> None:
+        """Update the data after step 2:
+        1. Save the reply in the prepared_replies table
+        2. Update conversation flag reply_needed to False
+        3. Update emails processed flags (for all emails in that conversation) in emails table
+        4. Update conversation process status to "completed"
+
+        Args:
+            conversation_id: The ID of the conversation to update
+            reply: The reply to save
+        Returns:
+            True if all updates were successful, False if there was at least one error
+        """
+        reply_saved = self._save_reply(conversation_id, reply_message)
+
+        reply_needed_updated = self._update_conversation_reply_needed_flag(
+            conversation_id, False
+        )
+        emails_processed_updated = self._update_emails_processed_flags(
+            conversation_id, True
+        )
+        conversation_process_status_updated = self._update_conversation_process_status(
+            conversation_id, "completed"
+        )
+
+        all_updates_successful = (
+            reply_saved
+            and reply_needed_updated
+            and emails_processed_updated
+            and conversation_process_status_updated
+        )
+        if not all_updates_successful:
+            print(f"Error updating data for conversation {conversation_id}")
+            return False
+            # IMPORTANT NOTE: if one of updates failed, we need to roll back all the updates
+        return True
+
+    # NOTE: needs discussion what to do with policies
+    def update_data_after_step3(
+        self, conversation_id: int, new_schedule: datetime
+    ) -> None:
+        """Update the data after step 3:
+        1. Update schedule in schedules table
+
+        Args:
+            conversation_id: The ID of the conversation to update
+        """
+        schedule_updated = self._update_schedule(conversation_id, new_schedule)
+        if not schedule_updated:
+            print(f"Error updating schedule for conversation {conversation_id}")
+            return False
+        return True
+
+    def update_data_after_step4(self, conversation_id: int, reply_message: str) -> None:
+        """Update the data after step 4:
+        1. Save the reply in the prepared_replies table
+        2. Update conversation flag reply_needed to False
+        3. Update emails processed flags (for all emails in that conversation) in emails table
+        4. Update conversation process status to "completed"
+
+        Args:
+            conversation_id: The ID of the conversation to update
+            reply_message: The reply to save
+        Returns:
+            True if all updates were successful, False if there was at least one error
+        """
+        reply_saved = self._save_reply(conversation_id, reply_message)
+        reply_needed_updated = self._update_conversation_reply_needed_flag(
+            conversation_id, False
+        )
+        emails_processed_updated = self._update_emails_processed_flags(
+            conversation_id, True
+        )
+        conversation_process_status_updated = self._update_conversation_process_status(
+            conversation_id, "completed"
+        )
+
+        all_updates_successful = (
+            reply_saved
+            and reply_needed_updated
+            and emails_processed_updated
+            and conversation_process_status_updated
+        )
+        if not all_updates_successful:
+            print(f"Error updating data for conversation {conversation_id}")
+            return False
 
 
 # IGNORE
