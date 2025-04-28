@@ -26,49 +26,62 @@ class ConversationsDB:
             return [dict(zip(row.keys(), row)) for row in result]
         return dict(zip(result.keys(), result))
 
-    # TODO: tracking needs improvement. See comments inside the function
-    def _start_tracking(self, conversation_ids: List[int], source: str) -> None:
+    def _start_tracking(self, conversation_ids: List[int], source: str) -> bool:
         """Start tracking processes for given conversations if they don't have active processes.
+
+        If there are conversations already active, it will print out data about existing processes
+        on those conversations and return False.
+
+        If there are no conversations active, it will start tracking all conversations
+        by adding a new process for each conversation with status 'not_started' and source
+        as the provided in the source argument, and return True.
 
         Args:
             conversation_ids: List of conversation IDs to track
             source: Source identifier for the process (e.g., 'analysis', 'processing')
+        Returns:
+            True if the processes were started successfully, False if there was an error
         """
-        # TODO: if there are conversations already active, I need to return False and print out
-        # existing processes and their statuses
-        # TODO: and if no conversations active, then all god, insert all new and return True
-        # First check which conversations don't already have active processes
-        active_processes_query = """
-            SELECT conversation_id 
+        active_processes_query = f"""
+            SELECT
+                id,
+                conversation_id,
+                status,
+                source,
+                started_at,
+                completed_at
             FROM ps_list 
-            WHERE conversation_id IN ({})
+            WHERE conversation_id IN ({",".join("?" * len(conversation_ids))})
             AND (status != 'completed' OR completed_at IS NULL)
-        """.format(
-            ",".join("?" * len(conversation_ids))
-        )
+        """
 
         active_processes = self.db.execute_query(
             active_processes_query, tuple(conversation_ids)
         )
-        active_conv_ids = {row["conversation_id"] for row in active_processes}
-
-        # Only create processes for conversations that don't have active ones
-        new_conv_ids = [
-            conv_id for conv_id in conversation_ids if conv_id not in active_conv_ids
-        ]
-
-        if not new_conv_ids:
-            return
-
-        # Insert new processes using insert_data
-        for conv_id in new_conv_ids:
-            data = {
-                "conversation_id": conv_id,
-                "status": "not_started",
-                "source": source,
-                "started_at": datetime.now().isoformat(),
-            }
-            self.db.insert_data("ps_list", data)
+        # If none of the passed conversations have active process,
+        # then all good, start tracking all conversations and return True
+        if not active_processes:
+            for conv_id in conversation_ids:
+                data = {
+                    "conversation_id": conv_id,
+                    "status": "not_started",
+                    "source": source,
+                    "started_at": datetime.now().isoformat(),
+                }
+                self.db.insert_data("ps_list", data)
+            return True
+        # If some of the passed conversations have active process,
+        # then print out all existing processes and return False
+        else:
+            print("Some (or all) of the passed conversations have active processes:\n")
+            for row in active_processes:
+                print(
+                    f"  Process ID:      {row['id']},\n"
+                    f"  Conversation ID: {row['conversation_id']},\n"
+                    f"  Status & Source: {row['status']}, {row['source']},\n"
+                    f"  Start & End:     {row['started_at']}, {row['completed_at']}\n"
+                )
+            return False
 
     def _update_conversation_process_status(
         self, conversation_id: int, status: str
@@ -137,6 +150,7 @@ class ConversationsDB:
                 {"timestamp": timestamp},
                 f"conversation_id = {conversation_id}",
             )
+            return True
         elif len(result) == 0:
             self.db.insert_data(
                 "schedules",
@@ -352,8 +366,16 @@ class ConversationsDB:
             )
         return False
 
-    # TODO: tracking needs improvement. See comments inside the function
-    def get_unanalyzed_conversations(self, track: bool) -> List[Dict[str, Any]]:
+    def get_unanalyzed_conversations(self, track: bool) -> List[Dict[str, Any]] | bool:
+        """Get all conversations that have at least one unanalyzed email.
+        If track is True, then start tracking the conversations.
+
+        Args:
+            track: Whether to start tracking the conversations
+        Returns:
+            A list of conversations that have at least one unanalyzed email
+            or False if tracking is True and at least one conversation has an active process
+        """
         query = """
         SELECT
             c.id AS conversation_id,
@@ -423,12 +445,22 @@ class ConversationsDB:
         # Start tracking if requested
         if track:
             conversation_ids = [conv["conversation_id"] for conv in conversations]
-            # TODO: get the outcome of starting tracking, it should be True
-            self._start_tracking(conversation_ids, source="step1")
+            success = self._start_tracking(conversation_ids, source="step1")
+            if not success:
+                print(
+                    f"ERROR in {self.get_unanalyzed_conversations.__name__}: Some (or all) conversations have active processes"
+                )
+                return False
 
         return conversations
 
     def get_conversations_needing_reply(self) -> List[Dict[str, Any]]:
+        """Get all conversations that need a reply, based on reply_needed flag.
+        Tracking is not needed here, because we're not starting any new processes.
+
+        Returns:
+            A list of conversations that need a reply
+        """
         query = """
         SELECT
             c.id AS conversation_id,
@@ -492,7 +524,6 @@ class ConversationsDB:
 
         return conversations
 
-    # TODO: tracking needs improvement. See comments inside the function
     # TODO: this function also needs to return awareness time and if a conversation
     # has been replied to in a previous loop, then return the reply as well
     def get_scheduled_conversations(self, track: bool) -> List[Dict[str, Any]]:
@@ -565,66 +596,92 @@ class ConversationsDB:
         # Start tracking if requested
         if track:
             conversation_ids = [conv["conversation_id"] for conv in conversations]
-            # TODO: get the outcome of starting tracking, it should be True
-            self._start_tracking(conversation_ids, source="step3")
+            success = self._start_tracking(conversation_ids, source="step3")
+            if not success:
+                print(
+                    f"ERROR in {self.get_scheduled_conversations.__name__}: Some (or all) conversations have active processes"
+                )
+                return False
 
         return conversations
 
     def update_data_after_step1(
         self,
         conversation_id: int,
-        new_schedule: datetime,
-        new_reply_needed: bool,
-        track: bool,
-    ) -> None:
+        new_schedule: datetime = None,
+        new_reply_needed: bool = False,
+    ) -> bool:
         """Update the data after step 1:
-        1. Update schedule in schedules table
-        2. Update reply needed flag in conversations table
-        3. Update emails analyzed flags (for all emails in that conversation) in emails table
-        4. If reply is not needed, then we're done with this conversation and we:
-            - Update emails processed flags (for all emails in that conversation) in emails table
-            - Update conversation process status to "completed"
-            If reply is needed, then process is not complete yet, so we:
+        1. Update schedule in schedules table (if provided)
+        2. Update emails analyzed flags (for all emails in that conversation) in emails table
+        3. Update reply needed flag in conversations table
+        4. If reply is needed, then process is not complete yet, so we:
             - Update converastion process status to "analyzed" (meaning, waiting to be "processed")
+            - Leave processed flags as is
+           If reply is not needed, then we're done with this conversation and we:
+            - Update conversation process status to "completed"
+            - Update emails processed flags (for all emails in that conversation) in emails table
 
         Args:
             conversation_id: The ID of the conversation to update
-            new_schedule: The new schedule for the conversation
-            new_reply_needed: The new reply needed flag
+            new_schedule: The new schedule for the conversation (optional)
+            new_reply_needed: The new reply needed flag (False by default)
         Returns:
             True if all updates were successful, False if there was at least one error
         """
-        schedule_updated = self._update_schedule(conversation_id, new_schedule)
-        reply_needed_updated = self._update_conversation_reply_needed_flag(
-            conversation_id, new_reply_needed
-        )
-        emails_analyzed_updated = self._update_emails_analyzed_flags(
-            conversation_id, True
-        )
-        emails_processed_updated = (
-            True  # By default True, but can become False inside the if statement
-        )
-        if new_reply_needed:
-            emails_processed_updated = self._update_emails_processed_flags(
-                conversation_id, False
-            )
-            conversation_process_status_updated = (
-                self._update_conversation_process_status(conversation_id, "analyzed")
+
+        # 1. Update schedule (if provided)
+        if new_schedule:
+            schedule_update_success = self._update_schedule(
+                conversation_id, new_schedule
             )
         else:
-            conversation_process_status_updated = (
+            schedule_update_success = True
+
+        # 2. Update emails ANALYZED flags
+        emails_analyzed_update_success = self._update_emails_analyzed_flags(
+            conversation_id, True
+        )
+
+        # 3. Update reply needed flag in conversations table
+        reply_needed_update_success = self._update_conversation_reply_needed_flag(
+            conversation_id, new_reply_needed
+        )
+
+        # 4. Update emails PROCESSED flags, depending whether reply is needed or not
+        #    and update conversation process status, depending whether reply is needed or not
+        if new_reply_needed:
+            # if reply is needed, then PROCESSED flag does not need update
+            # so the success flag is set to True
+            conversation_process_status_update_success = (
+                self._update_conversation_process_status(conversation_id, "analyzed")
+            )
+            emails_processed_update_success = True
+        else:
+            conversation_process_status_update_success = (
                 self._update_conversation_process_status(conversation_id, "completed")
+            )
+            emails_processed_update_success = self._update_emails_processed_flags(
+                conversation_id, True
             )
 
         all_updates_successful = (
-            schedule_updated
-            and reply_needed_updated
-            and emails_analyzed_updated
-            and emails_processed_updated
-            and conversation_process_status_updated
+            schedule_update_success  # 1.
+            and emails_analyzed_update_success  # 2.
+            and reply_needed_update_success  # 3.
+            and emails_processed_update_success  # 4.
+            and conversation_process_status_update_success  # 4.
         )
         if not all_updates_successful:
-            print(f"Error updating data for conversation {conversation_id}")
+            print(
+                f"Error in {self.update_data_after_step1.__name__} for conversation ID {conversation_id}: \n"
+                f"  all_updates_successful: {all_updates_successful}, \n"
+                f"  schedule_update_success: {schedule_update_success}, \n"
+                f"  emails_analyzed_update_success: {emails_analyzed_update_success}, \n"
+                f"  reply_needed_update_success: {reply_needed_update_success}, \n"
+                f"  emails_processed_update_success: {emails_processed_update_success}, \n"
+                f"  conversation_process_status_update_success: {conversation_process_status_update_success}\n"
+            )
             return False
             # IMPORTANT NOTE: if one of updates failed, we need to roll back all the updates
         return True
@@ -695,44 +752,36 @@ class ConversationsDB:
         Returns:
             True if all updates were successful, False if there was at least one error
         """
-        reply_saved = self._save_reply(conversation_id, reply_message)
-        reply_needed_updated = self._update_conversation_reply_needed_flag(
+        reply_saved_success = self._save_reply(conversation_id, reply_message)
+        reply_needed_update_success = self._update_conversation_reply_needed_flag(
             conversation_id, False
         )
-        emails_processed_updated = self._update_emails_processed_flags(
+        emails_processed_update_success = self._update_emails_processed_flags(
             conversation_id, True
         )
-        conversation_process_status_updated = self._update_conversation_process_status(
-            conversation_id, "completed"
+        conversation_process_status_update_success = (
+            self._update_conversation_process_status(conversation_id, "completed")
         )
 
         all_updates_successful = (
-            reply_saved
-            and reply_needed_updated
-            and emails_processed_updated
-            and conversation_process_status_updated
+            reply_saved_success
+            and reply_needed_update_success
+            and emails_processed_update_success
+            and conversation_process_status_update_success
         )
         if not all_updates_successful:
             print(f"Error updating data for conversation {conversation_id}")
             return False
 
 
-# IGNORE
+# ==================================================================
+# Section for testing how database manager works - NOT FOR PRODUCTION
+# ==================================================================
 if __name__ == "__main__":
-    conversations_db = ConversationsDB()
-    # conversations_db.check_db_status()
-    conversations = conversations_db.get_scheduled_conversations()
+    cdb = ConversationsDB()
+    # cdb.check_db_status()
+    # conversations = cdb.get_scheduled_conversations()
+    # success = cdb._start_tracking([3], "step3")
+    # result = cdb.get_unanalyzed_conversations(track=True)
 
-    for conv in conversations:
-        print(f"\nConversation {conv['conversation_id']}")
-        print(f"Subject: {conv['conversation_subject']}")
-        print(f"User: {conv['user_name']}")
-        print("\nEmails:")
-        for email in conv["emails"]:
-            print(
-                f"  {email['date']} | From: {email['from_email']} To: {email['to_email']}"
-            )
-            print(
-                f"  Status: {'✓' if email['processed'] else '•'} processed, {'✓' if email['analyzed'] else '•'} analyzed"
-            )
-            print()
+    # success = cdb.update_data_after_step1(4, new_schedule=None, new_reply_needed=False)
