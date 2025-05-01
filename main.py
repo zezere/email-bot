@@ -12,7 +12,7 @@ def main():
         print("Not all replies sent yet, returning.")
         return
 
-    all_processes_completed = conv_db.check_db_status()
+    all_processes_completed = conv_db.all_processes_completed()
     if not all_processes_completed:
         if RESTART:
             print("Not all processes completed, calling bot anyway.")

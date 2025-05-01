@@ -35,7 +35,7 @@ class Bot:
                       if isinstance(unanalyzed_conversations, bool)
                       else "No unanalyzed conversations found.")
             print(f"Skipping conversation analysis: {reason}")
-            return  # TODO: should the bot behave differently if False? Is this redundant with check_db_status?
+            return  # TODO: should the bot behave differently if False? Is this redundant with all_processes_completed?
 
         for conversation in unanalyzed_conversations:
             conversation_id = conversation['conversation_id']
