@@ -38,7 +38,7 @@ models_supporting_structured_output = {
     'google/gemma-3-27b-it:free',
     'google/gemini-2.0-flash-exp:free',
     'meta-llama/llama-3.1-8b-instruct',  # $/M tokens in/out: 0.1/0.1
-    'mistralai/mistral-small-24b-instruct-2501', # $/M tokens in/out: 0.1/0.3
+    'mistralai/mistral-small-24b-instruct-2501',  # $/M tokens in/out: 0.1/0.3
     'mistralai/mistral-small-3.1-24b-instruct',  # $/M tokens in/out: 0.1/0.3
     'openai/gpt-4o-mini',  # $/M tokens in/out: 0.15/0.6
 }
@@ -66,7 +66,8 @@ class LLMHandler:
             response = requests.get(self.openrouter_base_url, headers=self.openrouter_headers)
             data = response.json()['data']
             limit = data['limit']
-            print(f'label: {data["label"]}, {data["usage"]}/{data["limit"] or "inf"} credits used {"(free tier)" if data["is_free_tier"] else ""}')
+            print(f'label: {data["label"]}, {data["usage"]}/{data["limit"] or "inf"} credits used '
+                  f'{"(free tier)" if data["is_free_tier"] else ""}')
             print(f'Rate limit: {limit["requests"]} per {limit["interval"]}')
         except Exception as e:
             print(f"Error in get_rate_limits: {e}")
@@ -115,7 +116,7 @@ class LLMHandler:
         # Wait a sec for database to receive the generation data
         time.sleep(1)
         try:
-            generation = requests.get(f'https://openrouter.ai/api/v1/generation',
+            generation = requests.get('https://openrouter.ai/api/v1/generation',
                                       headers=self.openrouter_headers,
                                       params={"id": generation_id})
             data = generation.json()["data"]
@@ -317,10 +318,9 @@ class ResponseScheduler(LLMHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def schedule_response(
+    def analyze_conversation_old(
         self,
         emails,
-        bot_address="acp@startup.com",
         now=None,
         verbose=False,
         DEBUG=False,
@@ -358,15 +358,15 @@ class ResponseScheduler(LLMHandler):
         if len(emails) == 0:
             print("EMPTY list of emails!")
             return
-        if emails[-1].get("From", "Unknown") == bot_address:
+        if emails[-1].get("role", "Unknown") == 'assistant':
             # Don't respond to self
             return dict(response_is_due=False, probability=0.0)
-        if (len(emails) == 1) and (emails[0].get("From", "Unknown") != bot_address):
+        if (len(emails) == 1) and (emails[0].get("role", "user") == 'user'):
             # Always respond to first user mail
             return dict(response_is_due=True, probability=1.0)
 
         # Create the user prompt with the email history
-        email_history = format_emails(emails, style='json', bot_address=bot_address)
+        email_history = format_emails(emails, style='json')
         now = now or datetime.now().astimezone()
         user_prompt = (
             "Here is the email conversation history:\n"
@@ -501,10 +501,9 @@ class ResponseScheduler(LLMHandler):
                 "error": f"Error: {str(e)}",
             }
 
-    def schedule_response_v2(
+    def analyze_conversation(
         self,
         emails,
-        bot_address="acp@startup.com",
         now=None,
         verbose=False,
         DEBUG=False,
@@ -593,7 +592,7 @@ class ResponseScheduler(LLMHandler):
         system_prompt = textwrap.dedent(system_prompt)
 
         # Create the user prompt with all email messages in human-readable format
-        user_prompt = format_emails(emails, style="human", bot_address=bot_address)
+        user_prompt = format_emails(emails, style="human")
 
         # "analysis": auxiliary task: allows non-reasoning LLMs to think, used only for debugging
         # "assistant_is_next": auxiliary task, affects how "date" is evaluated
@@ -838,7 +837,7 @@ class ResponseGenerator(LLMHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def generate_response(self, emails, bot_address, user_name="User", bot_name="Accountability Partner"):
+    def generate_response(self, emails, user_name="User", bot_name="Accountability Partner"):
         """Generate a chat completion with the role of an Accountability Partner."""
         system_prompt = f"""
         You are an accountability partner that helps users achieve their goals through email communication.
@@ -858,7 +857,7 @@ class ResponseGenerator(LLMHandler):
         system_prompt = textwrap.dedent(system_prompt)
 
         messages = [{"role": "system", "content": system_prompt}]
-        chat_formatted_emails = format_emails(emails, style='chat', bot_address=bot_address)
+        chat_formatted_emails = format_emails(emails, style='chat')
         for msg in chat_formatted_emails:
             assert isinstance(msg, dict)
             assert 'role' in msg
