@@ -12,7 +12,7 @@ class Bot:
 
     The bot can be interrupted and restarted at any moment, its memory (state) is the database.
     """
-    def __init__(self, conv_db: ConversationsDB, scheduler=None, generator=None):
+    def __init__(self, conv_db, scheduler=None, generator=None):
         self.db = conv_db
         self.test = False
         self.track = not self.test
