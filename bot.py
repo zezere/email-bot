@@ -1,6 +1,5 @@
 from datetime import datetime
 import textwrap
-from core.conversations_db import ConversationsDB
 from llm_handler import ResponseScheduler, ResponseGenerator
 from scheduling import ScheduleProcessor, REMINDER_POLICIES
 from utils import get_message_sent_time
@@ -13,13 +12,10 @@ class Bot:
 
     The bot can be interrupted and restarted at any moment, its memory (state) is the database.
     """
-    def __init__(self, validator=None, moderator=None, scheduler=None, generator=None):
-        self.db = ConversationsDB()
+    def __init__(self, conv_db: ConversationsDB, scheduler=None, generator=None):
+        self.db = conv_db
         self.test = False
         self.track = not self.test
-        # self.email_handler = EmailHandler()
-        # self.email_address = self.email_handler.email  # bot address from .env
-        # self.name = self.email_address.split('@')
         self.scheduler = scheduler or ResponseScheduler()
         self.generator = generator or ResponseGenerator()
         self.running_conversations = set()  # conversation_ids handled in this bot iteration

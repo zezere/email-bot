@@ -1,14 +1,25 @@
-from core.conversations_db import check_db_status
+from core.conversations_db import ConversationsDB
 from bot import Bot
+
+RESTART = False
 
 
 def main():
-    all_processes_completed = check_db_status()
-    if not all_processes_completed:
-        # TODO: discuss what to do here. Is this obsolete?
-        print("not all processes completed.")
+    conv_db = ConversationsDB()
 
-    bot = Bot()
+    if not conv_db.all_replies_sent():
+        print("Not all replies sent yet, returning.")
+        return
+
+    all_processes_completed = conv_db.check_db_status()
+    if not all_processes_completed:
+        if RESTART:
+            print("Not all processes completed, calling bot anyway.")
+        else:
+            print("Not all processes completed, returning.")
+            return
+
+    bot = Bot(conv_db)
     bot.analyze_conversations()  # step 1: set schedules & identify running conversations
     any_errors = bot.manage_running_conversations()  # step 2: write responses
     if any_errors:
