@@ -1,9 +1,7 @@
 from datetime import datetime, timedelta, timezone
-from database import init_db
 from email_handler import EmailHandler
 import email.utils
-from database import save_email, email_exists
-from bot import Bot, get_email_body
+from bot import Bot
 from utils import (get_message_sent_time, binary_cross_entropy, generate_message_id,
                    datetime_to_rfc, wrap_indent)
 from email.message import EmailMessage
@@ -12,6 +10,7 @@ import tiktoken
 import numpy as np
 from functools import partial
 from llm_handler import EmailValidator, ResponseScheduler, EmailModerator, ResponseGenerator
+from core.conversations_db import ConversationsDB
 
 
 def generate_test_emails(n=3, to='acp@startup.com'):
@@ -163,6 +162,32 @@ def test_bot():
     bot.generate_responses()
 
     print("-" * 50)
+
+
+def test_bot_v2():
+    """Test the Bot class with the new ConversationsDB API."""
+    conv_db = ConversationsDB()
+
+    if not conv_db.all_replies_sent():
+        print("Not all replies sent yet, returning.")
+        return
+
+    all_processes_completed = conv_db.check_db_status()
+    if not all_processes_completed:
+        if RESTART:
+            print("Not all processes completed, calling bot anyway.")
+        else:
+            print("Not all processes completed, returning.")
+            return
+
+    bot = Bot(conv_db)
+
+    # Step 1: set schedules & identify running conversations
+    any_errors = bot.analyze_conversations()
+    if any_errors:
+        print(any_errors)
+        print("Failed to analyze all conversations, returning.")
+        return
 
 
 def test_email_fetching():
