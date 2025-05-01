@@ -1,7 +1,10 @@
 run_bot.sh
 testing.py
+data
 .env
-data/
+*.db
+*.json
+*.zip
 shell/
 ai-cookbook-main/
 
