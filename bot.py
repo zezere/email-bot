@@ -27,12 +27,15 @@ class Bot:
         Schedules are used to trigger reminder emails.
         """
         unanalyzed_conversations = self.db.get_unanalyzed_conversations(self.track)
+        any_errors = False
+
         if not unanalyzed_conversations:
+            # False or empty?
             reason = ("At least one conversation has unfinished processes."
                       if isinstance(unanalyzed_conversations, bool)
                       else "No unanalyzed conversations found.")
             print(f"Skipping conversation analysis: {reason}")
-            return
+            return  # TODO: should the bot behave differently if False? Is this redundant with check_db_status?
 
         for conversation in unanalyzed_conversations:
             conversation_id = conversation['conversation_id']
@@ -62,8 +65,14 @@ class Bot:
             if hasattr(self, 'chattiness') and result['probability'] > (1 - self.chattiness):
                 reply_needed = True
 
-            self.db.update_data_after_analysis(conversation_id, new_schedule, reply_needed)
-            self.running_conversations.add((conversation_id))
+            update_complete = self.db.update_data_after_analysis(conversation_id, new_schedule, reply_needed)
+            if update_complete:
+                self.running_conversations.add((conversation_id))
+            else:
+                print(f"Failed to update data after analysis for ({conversation_id}, '{subject}')")
+                any_errors = True
+
+        return any_errors
 
     def manage_running_conversations(self):
         """Generate responses in all running conversations.

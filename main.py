@@ -5,6 +5,7 @@ RESTART = False
 
 
 def main():
+    # Step 0: init DB, Bot, check sent emails and completed processes
     conv_db = ConversationsDB()
 
     if not conv_db.all_replies_sent():
@@ -20,13 +21,23 @@ def main():
             return
 
     bot = Bot(conv_db)
-    bot.analyze_conversations()  # step 1: set schedules & identify running conversations
-    any_errors = bot.manage_running_conversations()  # step 2: write responses
+
+    # Step 1: set schedules & identify running conversations
+    any_errors = bot.analyze_conversations()
+    if any_errors:
+        print(any_errors)
+        print("Failed to analyze all conversations, returning.")
+        return
+
+    # Step 2: write responses
+    any_errors = bot.manage_running_conversations()
     if any_errors:
         print("Failed to generate or save responses for some conversations, "
               "skipping step 3 (manage_reminders).")
         return
-    bot.manage_reminders()  # step 3: process schedules & (step 4): write reminders
+
+    # Step 3: process schedules & (step 4): write reminders
+    bot.manage_reminders()
 
 
 if __name__ == "__main__":
