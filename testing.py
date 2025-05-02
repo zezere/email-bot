@@ -3,23 +3,14 @@ from database import init_db
 from email_handler import EmailHandler
 import email.utils
 from database import save_email, email_exists
+from llm_handler import LLMHandler, ValidationAgent, SchedulingAgent, ModerationAgent
 from bot import Bot, get_email_body
-from utils import get_message_sent_time, binary_cross_entropy
+from utils import get_message_sent_time, binary_cross_entropy, generate_message_id, datetime_to_rfc, wrap_indent
 from email.message import EmailMessage
 import random
 import tiktoken
 import numpy as np
-<<<<<<< Updated upstream
 from functools import partial
-import hashlib
-=======
-from llm_handler import (
-    EmailValidator,
-    ResponseScheduler,
-    EmailModerator
-)
-
->>>>>>> Stashed changes
 
 
 def generate_test_emails(n=3, to='acp@startup.com'):
@@ -47,12 +38,11 @@ def generate_test_emails(n=3, to='acp@startup.com'):
         msg = EmailMessage()
         msg['From'] = addresses[-1] if (i == 0) else random.choice(addresses)
         msg['To'] = to
-        msg['Message-Id'] = '202503252000.' + str(random.randint(0, 1000000))
         msg['Subject'] = subjects[-1] if (i == 0) else random.choice(subjects)
-
         msg['Date'] = get_random_datetime(max_age_hours=3).isoformat()
-
-        msg.set_content(bodies[-1] if (i == 0) else random.choice(bodies))
+        body = bodies[-1] if (i == 0) else random.choice(bodies)
+        msg.set_content(body)
+        msg['Message-ID'] = generate_message_id(msg['From'], msg['Subject'], msg['Date'])
         emails.append(msg)
     return emails
 
@@ -75,18 +65,20 @@ def grab_test_conversation(topic: str):
     return topic, conversations[topic]
 
 
-def convert_messages_to_emails(topic, messages=None, user_address='john.doe@gmail.com',
-                               bot_address='acp@startup.com', response_time=None):
+def convert_messages_to_emails(topic, num_messages=None, user_address='john.doe@gmail.com',
+                               bot_address='acp@startup.com', response_time=5):
     """Returns a list of emails from a ACP conversation on `topic`.
 
     response_time (int): delay between messages in minutes
-    response_time (list): list of datetime objects for Date"""
-    if messages is None:
-        # get them from data.conversations
-        topic, conversation = grab_test_conversation(topic)
-        messages = conversation["messages"]
-        if "dates" in conversation:
-            response_time = conversation["dates"]
+    response_time (list): list of datetime objects for Date
+    """
+    # Get messages from data.test_conversations
+    topic, conversation = grab_test_conversation(topic)
+    messages = conversation["messages"]
+    if num_messages:
+        messages = messages[:num_messages]
+    if "dates" in conversation:
+        response_time = conversation["dates"]
 
     user = dict(role='user', address=user_address)
     bot = dict(role='assistant', address=bot_address)
@@ -105,14 +97,14 @@ def convert_messages_to_emails(topic, messages=None, user_address='john.doe@gmai
         if isinstance(response_time, int):
             num_messages_that_follow = len(messages) - i
             dt = datetime.now().astimezone() - timedelta(minutes=response_time * num_messages_that_follow)
-            msg['Date'] = dt.isoformat()
+            msg['Date'] = datetime_to_rfc(dt)
         elif isinstance(response_time, list) and len(response_time) > i:
-            msg['Date'] = response_time[i].isoformat()
+            msg['Date'] = datetime_to_rfc(response_time[i])
         else:
             raise ValueError("Have no Date for email")
         msg['Subject'] = topic
         msg.set_content(message)
-        msg['Message-Id'] = hashlib.md5((message + msg['Subject'] + msg['Date']).encode()).hexdigest()
+        msg['Message-ID'] = generate_message_id(user['address'], msg['Subject'], msg['Date'])
 
         emails.append(msg)
     return emails
@@ -120,8 +112,7 @@ def convert_messages_to_emails(topic, messages=None, user_address='john.doe@gmai
 
 def fake_send_email(to_email, subject, body):
     print(f"Sending (faked) email to {to_email} ({subject}):")
-    print(body)
-    print('-' * 50)
+    print(wrap_indent(body, width=80, indentation=8))
 
 
 def test_bot():
@@ -132,17 +123,20 @@ def test_bot():
     # Initialize database
     init_db()
 
-    # Create bot instance
+    # Create a test bot instance with simulated mail server
     bot = Bot()
+    bot.test = True
+    bot.email_handler.email = "testbot@startup.void"
+    bot.email_address = bot.email_handler.email
+    bot.name = "Bot, James Bot"
+    assert 'test' in bot.email_address, 'use testbot@startup.void for EMAIL in .env when testing!'
 
-    # If mail server is no configured in .env, test with fake mails
-    if (bot.email_handler.email is None) or ('test' in bot.email_handler.email):
-        # print("Using fake emails for testing.")
-        # bot.email_handler.check_inbox = generate_test_emails
-        topic = "Startup Entrepreneurship"
-        bot.email_handler.check_inbox = partial(convert_messages_to_emails, topic=topic,
-                                                bot_address=bot.email_handler.email)
-        bot.email_handler.send_email = fake_send_email
+    bot.email_handler.check_inbox = partial(convert_messages_to_emails,
+                                            topic = "Startup Entrepreneurship",
+                                            num_messages = 11,
+                                            bot_address = bot.email_handler.email)
+
+    bot.email_handler.send_email = fake_send_email
 
     # Process new emails
     print("\nStarting email processing (process_new_emails)...")
@@ -157,8 +151,13 @@ def test_bot():
     bot.llm_handler.model_id = 'mistralai/mistral-small-24b-instruct-2501'  # schedule_response
     bot.manage_conversations()
 
-    print(f"\nGenerating {len(bot.active_conversations)} responses (generate_response)...")
-    bot.llm_handler.model_id = 'mistralai/mistral-small-24b-instruct-2501'  # generate_response
+    print(f"\nGenerating {len(bot.active_conversations)} responses (generate_response) to these conversations:")
+    for i, conv in enumerate(bot.active_conversations):
+        print(i, conv)
+        assert conv[0] != bot.email_address, "only user_email_addresses may appear here!"
+    print()
+
+    bot.llm_handler.model_id = 'openrouter/optimus-alpha'  # generate_response
     bot.generate_responses()
 
     print("-" * 50)
@@ -170,8 +169,8 @@ def test_email_fetching():
 
     # Create handlers
     email_handler = EmailHandler()
-    moderator = EmailModerator()
-
+    moderation_agent = ModerationAgent()
+    
     # Fetch emails
     emails = email_handler.check_inbox()
     print(f"Found {len(emails)} emails in inbox")
@@ -192,7 +191,7 @@ def test_email_fetching():
         sent_at = email_msg.get("Date", "")
 
         # Moderate the email content
-        is_appropriate, moderation_result = moderator.moderate_email(body)
+        is_appropriate, moderation_result = moderation_agent.moderate_email(body)
         print(f"Moderation result for {message_id}: {moderation_result}")
 
         # Save email information to database with moderation results
@@ -210,13 +209,20 @@ def test_email_fetching():
 
 
 def test_validation():
-    """Test validation on normal and malicious emails."""
+    """Test validation on normal and malicious emails.
+
+    Tested models:
+    - mistralai/mistral-small-24b-instruct-2501:free
+    - google/gemma-2-9b-it:free  sometimes returns empty response
+    """
     from bot import is_valid_email_address
     from time import perf_counter, sleep
 
-    validator = EmailValidator()
+    validation_agent = ValidationAgent()
     validation_model = 'mistralai/mistral-small-24b-instruct-2501:free'
-    gt_model = 'google/gemini-2.5-pro-exp-03-25:free'
+    # gt_model = 'deepseek/deepseek-chat-v3-0324:free'  # no structured output
+    gt_model = 'google/gemini-2.5-pro-exp-03-25:free'  # structured output, but RESOURCE_EXHAUSTED
+    # gt_model = 'google/gemini-2.0-flash-lite-preview-02-05:free'  # structured output
 
     test_emails = generate_test_emails(100)
     test_labels = [None for _ in test_emails]
@@ -244,8 +250,8 @@ def test_validation():
         gt_reasoning = ''
         if label is None:
             t0 = perf_counter()
-            label, gt_reasoning = validator.validate_email(sender_email, subject,
-                                                         body, model_id=gt_model)
+            label, gt_reasoning = validation_agent.validate_email(sender_email, subject,
+                                                             body, model_id=gt_model)
             times['gt'].append(perf_counter() - t0)
 
             # Handle rate limits
@@ -253,8 +259,8 @@ def test_validation():
                 print("waiting to pass rate-limit for free models...")
                 sleep(60)
                 t0 = perf_counter()
-                label, gt_reasoning = validator.validate_email(sender_email, subject,
-                                                             body, model_id=gt_model)
+                label, gt_reasoning = validation_agent.validate_email(sender_email, subject,
+                                                                 body, model_id=gt_model)
                 times['gt'].append(perf_counter() - t0)
             elif gt_reasoning == 'wait a day':
                 print("daily rate limit for free models reached, quitting.")
@@ -266,8 +272,8 @@ def test_validation():
 
         # Test
         t0 = perf_counter()
-        response, reasoning = validator.validate_email(sender_email, subject,
-                                                     body, model_id=validation_model)
+        response, reasoning = validation_agent.validate_email(sender_email, subject,
+                                                         body, model_id=validation_model)
         times['valid'].append(perf_counter() - t0)
         if response == label:
             print(f"PASSED validation: {response}")
@@ -295,7 +301,7 @@ def test_scheduler(emails=None, bot_address='acp@startup.com'):
     date/time and a list of past emails from a conversation. Labels are
     generated from conversation time stamps.
     """
-    scheduler = ResponseScheduler()
+    scheduler_agent = SchedulingAgent()
     scheduler_model = 'openrouter/quasar-alpha'  # free+cloaked, excels at this task!
     # scheduler_model = 'mistralai/mistral-small-24b-instruct-2501'  #  0.1/0.3 $/M tokens in/out
     # scheduler_model = 'deepseek/deepseek-chat-v3-0324:free'  # no structured output
@@ -322,9 +328,9 @@ def test_scheduler(emails=None, bot_address='acp@startup.com'):
     print(f'Scheduler model:   {scheduler_model}')
     print(f'Conversation:      {topic} ({len(test_emails)} messages)')
 
-    def _validate(llm_handler, message_history, label, model_id, bot_address, current_time,
+    def _validate(message_history, label, model_id, bot_address, current_time,
                   verbose, DEBUG, exit_on_first_mistake=False):
-        prediction = scheduler.schedule_response_v2(message_history,
+        prediction = scheduler_agent.schedule_response_v2(message_history,
                                                       model_id=model_id,
                                                       bot_address=bot_address,
                                                       now=current_time,
@@ -380,7 +386,7 @@ def test_scheduler(emails=None, bot_address='acp@startup.com'):
                 print(f"Message {i+1} is delayed, testing prediction for msg {i} at various times...")
                 while dt < due_time - timedelta(minutes=90):
                     label = (False, 0.0)
-                    acc, loss, error = _validate(scheduler, message_history, label, scheduler_model,
+                    acc, loss, error = _validate(llm_handler, message_history, label, scheduler_model,
                                                  bot_address, dt, verbose, DEBUG, exit_on_first_mistake)
                     if error:
                         break
@@ -390,7 +396,7 @@ def test_scheduler(emails=None, bot_address='acp@startup.com'):
 
                 dt = due_time + timedelta(minutes=90)
                 label = (True, 1.0)
-                acc, loss, error = _validate(scheduler, message_history, label, scheduler_model,
+                acc, loss, error = _validate(llm_handler, message_history, label, scheduler_model,
                                              bot_address, dt, verbose, DEBUG, exit_on_first_mistake)
                 if error:
                     break
@@ -416,7 +422,7 @@ def test_scheduler(emails=None, bot_address='acp@startup.com'):
 
 def test_moderation():
     """Test the moderation functionality with various types of content."""
-    moderator = EmailModerator()
+    moderation_agent = ModerationAgent()
 
     # Test cases
     test_cases = [
@@ -441,7 +447,7 @@ def test_moderation():
     for test_case in test_cases:
         print(f"\nTest case: {test_case['description']}")
         print(f"Content: {test_case['content']}")
-        is_appropriate, reason = moderator.moderate_email(test_case["content"])
+        is_appropriate, reason = moderation_agent.moderate_email(test_case["content"])
         print(f"Result: {reason}")
         print(f"Appropriate: {is_appropriate}")
         print("-" * 50)
