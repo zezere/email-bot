@@ -1,8 +1,8 @@
 from datetime import datetime
 import textwrap
+from utils import wrap_indent
 from llm_handler import ResponseScheduler, ResponseGenerator
 from scheduling import ScheduleProcessor, REMINDER_POLICIES
-from utils import get_message_sent_time
 
 
 class Bot:
@@ -12,10 +12,10 @@ class Bot:
 
     The bot can be interrupted and restarted at any moment, its memory (state) is the database.
     """
-    def __init__(self, conv_db, scheduler=None, generator=None):
+    def __init__(self, conv_db, scheduler=None, generator=None, test=False):
         self.db = conv_db
-        self.test = False
-        self.track = not self.test
+        self.test = test
+        self.track = True  # not self.test: update_data_after_analysis fails if track=False
         self.scheduler = scheduler or ResponseScheduler()
         self.generator = generator or ResponseGenerator()
         self.running_conversations = set()  # conversation_ids handled in this bot iteration
@@ -34,8 +34,11 @@ class Bot:
             reason = ("At least one conversation has unfinished processes."
                       if isinstance(unanalyzed_conversations, bool)
                       else "No unanalyzed conversations found.")
-            print(f"Skipping conversation analysis: {reason}")
+            print(f"Step 1: Skipping conversation analysis: {reason}")
             return  # TODO: should the bot behave differently if False? Is this redundant with all_processes_completed?
+
+        if self.test:
+            print(f"Step 1: Database returned {len(unanalyzed_conversations)} conversations for analysis...")
 
         for conversation in unanalyzed_conversations:
             conversation_id = conversation['conversation_id']
@@ -44,9 +47,10 @@ class Bot:
             new_schedule = None
             reply_needed = False
 
-            result = self.scheduler.analyze_conversation(messages, now=None,
-                                                         verbose=False,
-                                                         DEBUG=False)
+            if self.test:
+                print(f"\nConversation {conversation_id} ({subject}, {len(messages)} messages, last from {messages[-1]['role']})")
+
+            result = self.scheduler.analyze_conversation(messages, now=None, debug_level=0)
 
             if 'error' in result:
                 print(f"schedule_response agent failed with {result['error']} "
@@ -55,11 +59,13 @@ class Bot:
 
             elif result['response_is_due']:
                 reply_needed = True
+                if self.test:
+                    print("Result: Reply needed.")
 
             else:
                 new_schedule = result['scheduled_for']
-                print(f"Result: response is NOT DUE for ({conversation_id}, '{subject}'), "
-                      f"schedule set for {new_schedule.isoformat()}")
+                if self.test:
+                    print(f"Result: No reply needed. Setting schedule for {new_schedule.isoformat()}")
 
             # Future: go full probabilistic
             if hasattr(self, 'chattiness') and result['probability'] > (1 - self.chattiness):
@@ -75,11 +81,17 @@ class Bot:
         return any_errors
 
     def manage_running_conversations(self):
-        """Generate responses in all running conversations.
+        """Generate responses for all running conversations.
 
         Return False if any response could not be generated or saved."""
         running_conversations = self.db.get_conversations_needing_reply()
         any_errors = False
+
+        if not running_conversations:
+            print("\nStep 2: Database returned no running conversations.")
+            return any_errors
+        else:
+            print(f"\nStep 2: Database returned {len(running_conversations)} running conversations, generating responses...")
 
         for conversation in running_conversations:
             conversation_id = conversation['conversation_id']
@@ -88,6 +100,7 @@ class Bot:
             user_name = conversation['user_name']
 
             # Generate response
+            print(f"\nConversation {conversation_id} ({user_name}, '{subject}', {len(messages)} messages)")
             email_body = self.generator.generate_response(messages, user_name=user_name)
 
             # Handle failure
@@ -95,8 +108,12 @@ class Bot:
                 any_errors = True
                 print(f"Failed to generate response email to {user_name} ({subject})")
                 print("Last message:")
-                print(messages[-1])
+                print(str(messages[-1]))
                 continue
+
+            if self.test:
+                print("Generated response:")
+                print(wrap_indent(email_body, width=80, indentation=8))
 
             # Save response to database
             status = self.db.update_data_after_step2(conversation_id, email_body)
@@ -123,7 +140,7 @@ class Bot:
         - is datetime.now().astimezone() consistent with emails['date']?
         """
         conversations = self.db.get_scheduled_conversations(self.track)
-        print(f"Database returned {len(conversations)} scheduled conversations.")
+        print(f"\nStep 3: Database returned {len(conversations)} scheduled conversations.")
 
         processor = ScheduleProcessor()
         now = now or datetime.now().astimezone()
@@ -131,8 +148,8 @@ class Bot:
         for conversation in conversations:
             # Gather relevant information
             conversation_id = conversation['conversation_id']
-            schedule = conversation['schedule']  # CHECK
-            num_reminders_sent = conversation['num_reminders_sent']
+            schedule = conversation['schedule'].astimezone()  # TODO: call timezone already in conversations_db
+            num_reminders_sent = conversation['num_reminders']
             last_policy = conversation['last_policy']
             user_name = conversation['user_name']
             subject = conversation['conversation_subject']
@@ -140,29 +157,30 @@ class Bot:
             is_running = False  # TODO: this would be extra information provided by database
 
             if not messages:
-                print(f"Error: conversation {conversation_id} ({user_name}, '{subject}') "
+                print(f"\nError: conversation {conversation_id} ({user_name}, '{subject}') "
                       "has schedule but no messages (skipping)")
                 continue
 
             if conversation_id in self.running_conversations or is_running:
-                print(f"Conversation {conversation_id} ({user_name}, '{subject}') "
+                print(f"\nConversation {conversation_id} ({user_name}, '{subject}') "
                       "is running, skipping policies")
                 continue
 
             # Check now() is later than last email's sent time
-            last_email_sent_time = get_message_sent_time(messages[-1])
+            last_email_sent_time = messages[-1]['sorting_timestamp']
             if last_email_sent_time and last_email_sent_time > now:
-                print(f"Warning: Conversation {conversation_id} ({user_name}, '{subject}') "
+                print(f"\nWarning: Conversation {conversation_id} ({user_name}, '{subject}') "
                       f"last email was sent in the future: {last_email_sent_time} (now is {now})")
 
             # For policy debugging: show relevant information
-            print(f"Trying up to {len(REMINDER_POLICIES)} policies in the following context:")
-            print(f"    schedule: {schedule}")
-            print(f"    last message:")
-            print(textwrap.indent(messages[-1].as_string(), ' ' * 8))
-            print(f"    current time: {now.isoformat()}\n")
+            print(f"\nConversation {conversation_id} ({user_name}, '{subject}'): "
+                  f"Trying up to {len(REMINDER_POLICIES)} policies. Context:")
+            print(f"    schedule:     {schedule}")
+            print(f"    current time: {now.isoformat()}")
+            print(f"    last message:")  # noqa F541
+            print(textwrap.indent(str(messages[-1]), ' ' * 8))
 
-            # Variant (A): try all policies, apply the first that works
+            # Try all policies, apply the first that works
             applied_policy = None
             for reminder_policy in REMINDER_POLICIES:
                 processor.set_policy(reminder_policy)
@@ -173,7 +191,7 @@ class Bot:
                                                               now,
                                                               num_reminders_sent,
                                                               last_policy)
-                    print(f"{reminder_policy.name} was successful.")
+                    print(f"{reminder_policy.name} was successful (reply_needed: {reply_needed}).")
                     applied_policy = reminder_policy.name
                     break
                 except Exception as e:
@@ -189,9 +207,7 @@ class Bot:
                 new_schedule = None
                 reply_needed = False
 
-                result = self.scheduler.analyze_conversation(messages, now=None,
-                                                             verbose=False,
-                                                             DEBUG=False)
+                result = self.scheduler.analyze_conversation(messages, now=None, debug_level=0)
 
                 if 'error' in result:
                     print(f"scheduler agent failed with {result['error']}. "
@@ -220,8 +236,7 @@ class Bot:
                 # Generate reminder
                 email_body = self.generator.generate_response(messages,
                                                               user_name=user_name,
-                                                              applied_policy=applied_policy,
-                                                              num_reminders_sent=num_reminders_sent)
+                                                              applied_policy=applied_policy)
 
                 # Handle failure
                 if not email_body:
@@ -236,3 +251,4 @@ class Bot:
                     print(f"Saved reminder email to {user_name} ({subject})")
                 else:
                     print(f"Failed to save reminder email to {user_name} ({subject})")
+                    # return  # Stop processing reminders on database error

@@ -25,7 +25,6 @@ def main():
     # Step 1: set schedules & identify running conversations
     any_errors = bot.analyze_conversations()
     if any_errors:
-        print(any_errors)
         print("Failed to analyze all conversations, returning.")
         return
 

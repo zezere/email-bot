@@ -20,7 +20,6 @@ is replaced by
 
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
-from utils import get_message_sent_time
 
 
 # Abstract Strategy (Policy) class
@@ -157,9 +156,9 @@ class WaitForSchedulePolicy(ReminderPolicy):
         If already max_delay time has passed since last message, wait for schedule or
         (if nothing scheduled ahead) ask agent.
         """
-        last_contact = get_message_sent_time(messages[-1])
+        last_contact = messages[-1]['sorting_timestamp']  # tzinfo?
         hours_past = self.max_delay.seconds // 3600
-        schedule_ahead = (schedule.day - now.day) > 0
+        schedule_ahead = (schedule - now).days > 0
 
         # Assumptions
         assert (now - last_contact) > self.max_delay, (

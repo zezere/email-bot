@@ -103,16 +103,16 @@ def get_email_body(email):
 
 
 def get_message_sent_time(email, return_now=False):
-    """Grabs "Date" field from `email` and returns a datetime object.
-    
+    """Grabs "Date" (or "date") field from `email` and returns a datetime object.
+
     If `return_now`, returns datetime.now().astimezone() if `email` has no valid Date.
     """
-    s = email.get("Date", "")
+    s = email.get("Date", email.get("date", ""))
     if not s:
         print(f'Warning: email has no Date field:\n{email}')
         return datetime.now().astimezone() if return_now else None
     try:
-        dt = parsedate_to_datetime(s)
+        dt = s if isinstance(s, datetime) else parsedate_to_datetime(s)
     except ValueError as e:
         print("Warning: email Date not in RFC 2822 format, trying isoformat")
         try:
@@ -189,7 +189,7 @@ def format_emails(emails, style='human_readable'):
             email_history.append(
                 f'From: {sender}\n'
                 f'Date: {formatted_date}\n'
-                f'Content: {body}---'
+                f'Content: {body}\n---'
             )
 
     # Format the final output based on style

@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from email_handler import EmailHandler
 import email.utils
 from bot import Bot
@@ -165,14 +166,24 @@ def test_bot():
 
 
 def test_bot_v2():
-    """Test the Bot class with the new ConversationsDB API."""
+    """Test the Bot class with the new ConversationsDB API.
+    
+    Missing database functions for testing:
+    [- is_empty]
+    - datetime cutoff to limit/increment the number of test messages
+    """
+    # Start with empty database
+    Path("data/test.db").unlink(missing_ok=True)
     conv_db = ConversationsDB()
+
+    # Add test data
+    conv_db.insert_test_data()
 
     if not conv_db.all_replies_sent():
         print("Not all replies sent yet, returning.")
         return
 
-    all_processes_completed = conv_db.check_db_status()
+    all_processes_completed = conv_db.all_processes_completed()
     if not all_processes_completed:
         if RESTART:
             print("Not all processes completed, calling bot anyway.")
@@ -180,14 +191,75 @@ def test_bot_v2():
             print("Not all processes completed, returning.")
             return
 
-    bot = Bot(conv_db)
+    bot = Bot(conv_db, test=True,
+              #scheduler=ResponseScheduler(model_id='mistralai/mistral-small-3.1-24b-instruct'),
+              scheduler=ResponseScheduler(model_id='meta-llama/llama-4-maverick:free'),
+              #generator=ResponseGenerator(model_id='deepseek/deepseek-r1:free'),
+              generator=ResponseGenerator(model_id='anthropic/claude-3.7-sonnet'),
+              )
 
     # Step 1: set schedules & identify running conversations
     any_errors = bot.analyze_conversations()
     if any_errors:
-        print(any_errors)
         print("Failed to analyze all conversations, returning.")
         return
+
+    # Step 2: write responses
+    any_errors = bot.manage_running_conversations()
+    if any_errors:
+        print("Failed to generate or save responses for some conversations, "
+              "skipping step 3 (manage_reminders).")
+        return
+
+    # Step 3: process schedules & (step 4): write reminders
+    bot.manage_reminders()
+
+
+def test_update_data_after_analysis():
+    Path("data/test.db").unlink(missing_ok=True)
+    conv_db = ConversationsDB()
+    conv_db.insert_test_data()
+    unanalyzed_conversations = conv_db.get_unanalyzed_conversations(track=False)
+    conversation_id = unanalyzed_conversations[0]['conversation_id']
+
+    # fails if track=False above
+    conv_db.update_data_after_analysis(conversation_id, new_schedule=None, new_reply_needed=True)
+
+
+def test_get_scheduled_conversations():
+    Path("data/test.db").unlink(missing_ok=True)
+    conv_db = ConversationsDB()
+    conv_db.insert_test_data()
+    scheduled_conversations = conv_db.get_scheduled_conversations(track=True)
+    print(f"Found {len(scheduled_conversations)} scheduled conversations")
+
+    # fails: sorting_timestamp is str not datetime
+    for conversation in scheduled_conversations:
+        for i, msg in enumerate(conversation['emails']):
+            # print(f"Conversation {conversation['conversation_id']}, message {i} keys: {msg.keys()}")
+            assert isinstance(msg['sorting_timestamp'], datetime), str(type(msg['sorting_timestamp']))
+
+
+def test_policy_on_scheduled_conversations():
+    Path("data/test.db").unlink(missing_ok=True)
+    conv_db = ConversationsDB()
+    conv_db.insert_test_data()
+    scheduled_conversations = conv_db.get_scheduled_conversations(track=True)
+    print(f"Found {len(scheduled_conversations)} scheduled conversations")
+
+    conversation = scheduled_conversations[2]
+    from scheduling import WaitForSchedulePolicy, ScheduleProcessor
+    processor = ScheduleProcessor()
+    reminder_policy = WaitForSchedulePolicy()
+    processor.set_policy(reminder_policy)
+    reply_needed = processor.process_schedule(
+        conversation['conversation_id'],
+        conversation['schedule'].astimezone(),  # TODO: call timezone already in conversations_db
+        conversation['emails'],
+        datetime.now().astimezone(),
+        conversation['num_reminders'],
+        conversation['last_policy'])
+    assert reply_needed == 'ask agent', f"{reply_needed} != 'ask agent'"
 
 
 def test_email_fetching():
@@ -475,4 +547,7 @@ if __name__ == "__main__":
     # test_validation()
     # test_moderation()
     # test_scheduler()
-    test_bot()
+    test_bot_v2()
+    # test_update_data_after_analysis()
+    # test_get_scheduled_conversations()
+    # test_policy_on_scheduled_conversations()

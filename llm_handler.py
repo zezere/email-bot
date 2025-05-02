@@ -322,13 +322,18 @@ class ResponseScheduler(LLMHandler):
         self,
         emails,
         now=None,
-        verbose=False,
-        DEBUG=False,
+        debug_level=0,
     ):
         """Decide whether a reponse is due.
 
         This agent gets the "From", "Date" and "body" attributes of each
         email in `emails` and the current date/time.
+
+        debug_level:
+            0: no debug output
+            1: show user prompt and debug information
+            2: also show system prompt
+            3: skip LLM call
 
         It returns two values in json format:
         - response_is_due (bool): whether it would be appropriate to repond to the last
@@ -415,16 +420,16 @@ class ResponseScheduler(LLMHandler):
 
         if self.model_id in models_supporting_structured_output:
             openrouter_json["response_format"] = response_format
-        else:
+        elif debug_level >= 1:
             print(
                 f"WARNING: schedule_response uses model w/o response_format: {self.model_id}"
             )
 
-        if verbose:
+        if debug_level >= 2:
             print(f"System Prompt:\n{system_prompt}")
+        if debug_level >= 1:
             print(f"User Prompt:\n{user_prompt}")
-
-        if DEBUG:
+        if debug_level >= 3:
             return {"response_is_due": False, "probability": 0.5}  # Skip LLM call
 
         try:
@@ -505,13 +510,18 @@ class ResponseScheduler(LLMHandler):
         self,
         emails,
         now=None,
-        verbose=False,
-        DEBUG=False,
+        debug_level=0,
     ):
         """Decide whether a reponse is due.
 
         This agent gets the "From", "Date" and "body" attributes of each
         email in `emails` and the current date/time.
+
+        debug_level:
+            0: no debug output
+            1: show user prompt and debug information
+            2: also show system prompt
+            3: skip LLM call
 
         It returns two values in json format:
         - response_is_due (bool): whether it would be appropriate to repond to the last
@@ -634,21 +644,24 @@ class ResponseScheduler(LLMHandler):
 
         if self.model_id in models_supporting_structured_output:
             openrouter_json["response_format"] = response_format
+            expected_structured_output = True
         else:
-            print(
-                f"WARNING: schedule_response uses model w/o response_format: {self.model_id}"
-            )
+            expected_structured_output = False
 
-        if verbose:
+        print(f"analyze_conversation: Using model {self.model_id}"
+              f"{' (structured output)' if expected_structured_output else ''}")
+
+        if debug_level >= 2:
             print(f"\n\nSystem Prompt:\n{system_prompt}")
+        if debug_level >= 1:
             print(f"User Prompt:\n{user_prompt}")
-
-        if DEBUG:
+        if debug_level >= 3:
+            # Skip LLM call
             return {
                 "reasoning": "DEBUG",
                 "response_is_due": False,
                 "probability": 0.5,
-            }  # Skip LLM call
+            }
 
         # OpenRouter request
         try:
@@ -695,7 +708,8 @@ class ResponseScheduler(LLMHandler):
 
         except json.JSONDecodeError:
             # If the response isn't valid JSON, try to extract it using regex
-            print("WARNING: LLM did not return JSON, trying with regex...")
+            if debug_level >= 1:
+                print("Warning: LLM did not return JSON, trying with regex...")
             assistant_is_next_pattern = r'"assistant_is_next"\s*:\s*(true|false)'
             date_pattern = r'"date"\s*:\s*"([^"]+)"'
 
@@ -707,19 +721,20 @@ class ResponseScheduler(LLMHandler):
                     "assistant_is_next": assistant_match.group(1).lower() == "true",
                     "date": date_match.group(1),
                 }
-                return self._evaluate_output(result, now)
+                return self._evaluate_output(result, now, debug_level)
             else:
-                print("ERROR: Also regex failed to match LLM response:")
+                print("Error: regex failed to match unstructured LLM response:")
                 print(textwrap.indent(content, '    '))
                 return dict(error="Failed to parse LLM response")
 
-    def _evaluate_output(self, result, now=None):
+    def _evaluate_output(self, result, now=None, debug_level=0):
         """
         Validates the output from the LLM and converts it to the expected format.
 
         Args:
             result (dict): The parsed JSON result from the LLM with 'assistant_is_next' and 'date' fields
             now (datetime, optional): Current datetime. Defaults to datetime.now().
+            debug_level (int, optional): Pring debug information if > 0.
 
         Returns:
             dict: Dictionary with 'response_is_due', 'probability', 'scheduled_for', and optional 'error' fields
@@ -747,15 +762,18 @@ class ResponseScheduler(LLMHandler):
 
             # If the parsed date is naive, make it aware using the local timezone
             if predicted_date.tzinfo is None:
-                print("adding system timezone to predicted_date")
                 predicted_date = predicted_date.replace(tzinfo=now.tzinfo)
+                if debug_level >= 1:
+                    print("adding system timezone to predicted_date")
 
             # DEBUG output
-            print(f"\nFields in result: {list(result.keys())}")
-            print(f"Analysis: {analysis}")
-            print(
-                f"                       predicted DATE: {predicted_date}   SENDER: {'assistant' if result['assistant_is_next'] else 'user'}"
-            )
+            if debug_level >= 1:
+                print(f"\nFields in result: {list(result.keys())}")
+                print(f"Analysis: {analysis}")
+                print(
+                    f"                       predicted DATE: {predicted_date}   "
+                    f"SENDER: {'assistant' if result['assistant_is_next'] else 'user'}"
+                )
 
             # Calculate time till scheduled response in minutes
             min_ahead = (predicted_date - now).total_seconds() / 60
@@ -763,12 +781,14 @@ class ResponseScheduler(LLMHandler):
             # If assistant is next, respond now or when scheduled, otherwise wait 90 min
             patience = 0 if result.get("assistant_is_next", True) else 90
             if min_ahead + patience <= 0:
-                print(
-                    f"Deterministic logic: min_ahead ({min_ahead}) + patience ({patience}) <= 0, reponse is due."
-                )  # DEBUG
+                if debug_level >= 1:
+                    print(f"Deterministic logic: min_ahead ({min_ahead}) + patience "
+                          f"({patience}) <= 0, reponse is due.")
                 return {"response_is_due": True, "probability": 1.0}
             else:
-                print(f"Deterministic logic: min_ahead ({min_ahead}) + patience ({patience}) > 0, reponse is not due.")  # DEBUG
+                if debug_level >= 1:
+                    print(f"Deterministic logic: min_ahead ({min_ahead}) + patience "
+                          f"({patience}) > 0, reponse is not due.")
                 return {"response_is_due": False, "probability": 0.0, "scheduled_for": predicted_date}
 
         except Exception as e:
@@ -837,7 +857,8 @@ class ResponseGenerator(LLMHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def generate_response(self, emails, user_name="User", bot_name="Accountability Partner"):
+    def generate_response(self, emails, user_name="User", bot_name="Accountability Partner",
+                          applied_policy=None):
         """Generate a chat completion with the role of an Accountability Partner."""
         system_prompt = f"""
         You are an accountability partner that helps users achieve their goals through email communication.
@@ -853,7 +874,7 @@ class ResponseGenerator(LLMHandler):
         If the email is a "start" message, welcome the user and acknowledge their goal.
         If it's an update, provide encouragement and ask about next steps or challenges.
         Only write the body text of the email, no headers, no footers, no PS.
-        """
+        """.strip()
         system_prompt = textwrap.dedent(system_prompt)
 
         messages = [{"role": "system", "content": system_prompt}]
@@ -864,6 +885,25 @@ class ResponseGenerator(LLMHandler):
             assert 'content' in msg
         messages.extend(chat_formatted_emails)
 
+        # Append tooluse message from scheduler
+        if applied_policy and applied_policy == 'WaitForSchedulePolicy':
+            pass  # Any steering needed?
+        elif applied_policy and applied_policy == 'EarlyReminderPolicy':
+            messages.append({"role": "tool", "content": (
+                "Today the user wanted to check-in, a short early reminder might be due now.")})
+        elif applied_policy and applied_policy == 'SecondReminderPolicy':
+            messages.append({"role": "tool", "content": (
+                "assistant has already sent a reminder, but the user has not checked in yet. "
+                "This is the last attempt to motivate the user to check in. "
+                "If the user does not check in, the assistant will not send another reminder.")})
+        elif applied_policy and applied_policy == 'LateReminderPolicy':
+            pass  # Any steering needed?
+        elif applied_policy and applied_policy == 'DefaultPolicy':
+            pass  # Any steering needed?
+        elif applied_policy and applied_policy == 'AskAgentPolicy':
+            pass  # Any steering needed?
+
+        print(f'Model: "{self.model_id}"')
         print("Messages sent to response agent:")
         for i, msg in enumerate(messages):
             print(f'{i:03} {msg["role"]}:')
@@ -888,6 +928,7 @@ class ResponseGenerator(LLMHandler):
                 return content
             else:
                 print(f"Error generating response: {response.status_code} - {response.text}")
-
+        except KeyError as e:
+            print(f"KeyError generating response: {e}, response: {response.json()}")
         except Exception as e:
-            print(f"Error generating response: {str(e)}")
+            print(f"Exception generating response: {str(e)}")
