@@ -907,7 +907,7 @@ class ConversationsDB:
 # Section for testing how database manager works - NOT FOR PRODUCTION
 # ===================================================================
 if __name__ == "__main__":
-    # pass
+    pass
     # conv_db = ConversationsDB()
     # conv_db.insert_test_data()
     # unanalyzed_conversations = conv_db.get_unanalyzed_conversations(track=False)
