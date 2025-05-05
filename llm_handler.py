@@ -38,14 +38,18 @@ models_supporting_structured_output = {
     'google/gemma-3-27b-it:free',
     'google/gemini-2.0-flash-exp:free',
     'meta-llama/llama-3.1-8b-instruct',  # $/M tokens in/out: 0.1/0.1
-    'mistralai/mistral-small-24b-instruct-2501', # $/M tokens in/out: 0.1/0.3
+    'mistralai/mistral-small-24b-instruct-2501',  # $/M tokens in/out: 0.1/0.3
     'mistralai/mistral-small-3.1-24b-instruct',  # $/M tokens in/out: 0.1/0.3
     'openai/gpt-4o-mini',  # $/M tokens in/out: 0.15/0.6
 }
 
 
 class LLMHandler:
-    def __init__(self):
+    def __init__(
+        self,
+        timeout: int = 5,
+        model_id: str = "mistralai/mistral-small-24b-instruct-2501:free",
+    ):
         self.openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         self.openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
         self.openrouter_base_url = "https://openrouter.ai/api/v1/chat/completions"
@@ -54,16 +58,16 @@ class LLMHandler:
             "Content-Type": "application/json",
             "HTTP-Referer": "https://github.com/yourusername/email-bot",
         }
-        self.model_id = 'mistralai/mistral-7b-instruct'  # $0.03/M in, $0.055/M out
-        #self.model_id = "mistralai/mistral-small-24b-instruct-2501:free"  # Free model
-        self.llm_timeout = 5  # response timeout in seconds
+        self.llm_timeout = timeout
+        self.model_id = model_id
 
     def get_rate_limits(self):
         try:
             response = requests.get(self.openrouter_base_url, headers=self.openrouter_headers)
             data = response.json()['data']
             limit = data['limit']
-            print(f'label: {data["label"]}, {data["usage"]}/{data["limit"] or "inf"} credits used {"(free tier)" if data["is_free_tier"] else ""}')
+            print(f'label: {data["label"]}, {data["usage"]}/{data["limit"] or "inf"} credits used '
+                  f'{"(free tier)" if data["is_free_tier"] else ""}')
             print(f'Rate limit: {limit["requests"]} per {limit["interval"]}')
         except Exception as e:
             print(f"Error in get_rate_limits: {e}")
@@ -72,28 +76,26 @@ class LLMHandler:
             except Exception:
                 pass
 
-    def get_model_pricing(self, model_id=None):
+    def get_model_pricing(self):
         """Returns input pricing, output pricing (USD/token)."""
         # data['architecture']['tokenizer'] values are neither correct not supported by tiktoken
-        model_id = model_id or self.model_id
         try:
-            data = available_models[model_id]
+            data = available_models[self.model_id]
             pricing_in = float(data['pricing']['prompt'])
             pricing_out = float(data['pricing']['completion'])
         except KeyError as e:
-            print(f"Error: missing pricing data {e} for model {model_id}")
+            print(f"Error: missing pricing data {e} for model {self.model_id}")
             return None, None, None
         return pricing_in, pricing_out
 
-    def get_cost_estimate(self, model_id=None, prompts=[], output=''):
+    def get_cost_estimate(self, prompts=[], output=''):
         """Returns a quick estimate of # input tokens, # output tokens, and total cost.
 
         The real numbers differ because native tokenizer is not known and
         Prompt Caching is not taken into account.
         """
-        model_id = model_id or self.model_id
         tokenizer = "gpt-4o"  # native tokenizer is usually not available
-        price_in, price_out = self.get_model_pricing(model_id)
+        price_in, price_out = self.get_model_pricing()
         try:
             encoding = tiktoken.encoding_for_model(tokenizer)
         except Exception as e:
@@ -114,7 +116,7 @@ class LLMHandler:
         # Wait a sec for database to receive the generation data
         time.sleep(1)
         try:
-            generation = requests.get(f'https://openrouter.ai/api/v1/generation',
+            generation = requests.get('https://openrouter.ai/api/v1/generation',
                                       headers=self.openrouter_headers,
                                       params={"id": generation_id})
             data = generation.json()["data"]
@@ -127,35 +129,53 @@ class LLMHandler:
             return 0, 0, 0
         return num_input_tokens, num_output_tokens, cost
 
-    def show_usage(self, model_id, prompts, output, response):
+    def show_usage(self, prompts, output, response):
         """Count input/output tokens, calculate LLM cost."""
-        num_input_tokens, num_output_tokens, cost = self.get_cost_estimate(model_id, prompts, output)
+        num_input_tokens, num_output_tokens, cost = self.get_cost_estimate(prompts, output)
         print(f"Tokens in: {num_input_tokens}, out: {num_output_tokens}, total cost: (USD) {cost:.6f} (estimate)")
         generation_id = response.json().get("id", None)
         if generation_id:
             num_input_tokens, num_output_tokens, cost = self.get_cost(generation_id)
             print(f"Tokens in: {num_input_tokens}, out: {num_output_tokens}, total cost: (USD) {cost:.6f} (real)")
 
-    def validate_email(self, email_sender, email_subject, email_body, model_id=None, subject_cutoff=50, body_cutoff=500):
+
+class EmailValidator(LLMHandler):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def validate_email(
+        self,
+        email_sender,
+        email_subject,
+        email_body,
+        subject_cutoff=50,
+        body_cutoff=500,
+    ):
         """Identify spam/DoS using a free or cheap OpenRouter LLM.
 
         Returns True if email appears valid.
         """
-        model_id = model_id or self.model_id
         if len(email_subject) > subject_cutoff:
-            email_subject = email_subject[:subject_cutoff] + f"... (skipping {len(email_subject) - subject_cutoff} chars)"
+            email_subject = (
+                email_subject[:subject_cutoff]
+                + f"... (skipping {len(email_subject) - subject_cutoff} chars)"
+            )
 
         if len(email_body) > body_cutoff:
-            words_skipped = count_words(email_body) - count_words(email_body[:body_cutoff])
-            email_body = email_body[:body_cutoff] + f"...\n(skipping {words_skipped} words)"
+            words_skipped = count_words(email_body) - count_words(
+                email_body[:body_cutoff]
+            )
+            email_body = (
+                email_body[:body_cutoff] + f"...\n(skipping {words_skipped} words)"
+            )
 
         system_prompt = (
-            'You are a security-focused email classifier. Your goal is to determine whether an email '
-            'is a legitimate request to a human person or spam/malicious content.\n'
-            'Instructions:\n'
-            'Classify the senders intent as either normal (legitimate) or malicious (spam, phishing, scam, DoS, or abuse). '
+            "You are a security-focused email classifier. Your goal is to determine whether an email "
+            "is a legitimate request to a human person or spam/malicious content.\n"
+            "Instructions:\n"
+            "Classify the senders intent as either normal (legitimate) or malicious (spam, phishing, scam, DoS, or abuse). "
             'Normal emails shall be labelled "pass", malicious emails shall be labelled "block".\n\n'
-            'Consider these factors:\n'
+            "Consider these factors:\n"
             '- High word count with little meaningful content: "block"\n'
             '- Urgent financial requests or threats: "block"\n'
             '- Excessive links or attachments from unknown senders: "block"\n'
@@ -176,13 +196,13 @@ class LLMHandler:
                         "classification": {
                             "type": "string",
                             "enum": ["pass", "block"],
-                            "description": "Classification of the email legitimacy as either 'pass' or 'block'."
+                            "description": "Classification of the email legitimacy as either 'pass' or 'block'.",
                         }
                     },
                     "required": ["classification"],
-                    "additionalProperties": False
-                }
-            }
+                    "additionalProperties": False,
+                },
+            },
         }
 
         user_prompt = f"""Email from {email_sender}:
@@ -190,14 +210,14 @@ class LLMHandler:
         Content: \n\n{email_body}\n"""
 
         openrouter_json = {
-            "model": model_id,
+            "model": self.model_id,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
         }
-        if model_id in models_supporting_structured_output:
-            openrouter_json['response_format'] = response_format
+        if self.model_id in models_supporting_structured_output:
+            openrouter_json["response_format"] = response_format
             expecting_structured_output = True
         else:
             expecting_structured_output = False
@@ -207,32 +227,38 @@ class LLMHandler:
                 self.openrouter_base_url,
                 headers=self.openrouter_headers,
                 json=openrouter_json,
-                timeout=self.llm_timeout
+                timeout=self.llm_timeout,
             )
 
             if response.status_code == 200:
                 if "choices" not in response.json():
                     # Handle errors from LLM provider
-                    if 'error' in response.json():
-                        response = response.json()['error']
-                        print(response['message'])
-                        if 'metadata' in response and 'raw' in response['metadata']:
-                            print(response['metadata']['raw'])
-                            return 'error', response['message']
-                        elif response['message'] == 'Rate limit exceeded: free-models-per-min':
-                            return 'error', 'wait a minute'
-                        elif response['message'] == 'Rate limit exceeded: free-models-per-day':
-                            return 'error', 'wait a day'
+                    if "error" in response.json():
+                        response = response.json()["error"]
+                        print(response["message"])
+                        if "metadata" in response and "raw" in response["metadata"]:
+                            print(response["metadata"]["raw"])
+                            return "error", response["message"]
+                        elif (
+                            response["message"]
+                            == "Rate limit exceeded: free-models-per-min"
+                        ):
+                            return "error", "wait a minute"
+                        elif (
+                            response["message"]
+                            == "Rate limit exceeded: free-models-per-day"
+                        ):
+                            return "error", "wait a day"
                         else:
-                            return 'error', response['message']
+                            return "error", response["message"]
                     else:
                         print("Unexpected response despite status_code 200.")
                         for key, value in response.json().items():
-                            print(f'{key}: {value}')
-                    return 'error', ''
+                            print(f"{key}: {value}")
+                    return "error", ""
 
                 response = response.json()["choices"][0]["message"]["content"].strip()
-                reasoning = ''
+                reasoning = ""
 
                 # Structured LLM response
                 if expecting_structured_output:
@@ -240,49 +266,74 @@ class LLMHandler:
                         data = json.loads(response)  # Safely parse JSON
                         if isinstance(data, dict) and "classification" in data:
                             classification = data["classification"]
-                            assert isinstance(classification, str), f'classification has unexpected type {type(classification)}'
-                            return classification, ''
+                            assert isinstance(
+                                classification, str
+                            ), f"classification has unexpected type {type(classification)}"
+                            return classification, ""
                         else:
                             print("Invalid response format:", data)
-                            return "error", "LLM sent structured output with invalid format"
+                            return (
+                                "error",
+                                "LLM sent structured output with invalid format",
+                            )
                     except json.JSONDecodeError:
                         print("Failed to parse JSON from structured output:", response)
                         return "error", "LLM sent corrupt structured output"
 
                 # Normal LLM response
-                response = response.strip('"\'.`').lower()
+                response = response.strip("\"'.`").lower()
                 if response.lower() in {"pass", "block"}:
-                    return 'pass' if response.lower() == 'pass' else 'block', reasoning
+                    return "pass" if response.lower() == "pass" else "block", reasoning
 
                 # Handle output from various models
-                if '</think>' in response:
+                if "</think>" in response:
                     print("DEBUG response with thinking:", response)
-                    reasoning, _, response = response.partition('</think>')
+                    reasoning, _, response = response.partition("</think>")
 
                 boxed_match = re.search(r"\\boxed\{(.*?)\}", response)
                 if boxed_match:
                     response = boxed_match.group(1)
                     if response.lower() in {"pass", "block"}:
-                        return 'pass' if response.lower() == 'pass' else 'block', reasoning
+                        return (
+                            "pass" if response.lower() == "pass" else "block"
+                        ), reasoning
                     else:
-                        return 'error', reasoning + f'\nResponse: {response}'
+                        return "error", reasoning + f"\nResponse: {response}"
 
                 # Unexpected LLM response
                 print(f'DEBUG: unexpected response: "{response}"')
-                return 'error', response
+                return "error", response
 
             else:
-                return 'error', f"Error generating response: {response.status_code} - {response.text}"
+                return (
+                    "error",
+                    f"Error generating response: {response.status_code} - {response.text}",
+                )
 
         except Exception as e:
-            return 'error', f"Error generating response: {str(e)} ({type(e)})"  # 'raw'
+            return "error", f"Error generating response: {str(e)} ({type(e)})"  # 'raw'
 
-    def schedule_response(self, emails, model_id=None, bot_address='acp@startup.com', now=None,
-                          verbose=False, DEBUG=False):
+
+class ResponseScheduler(LLMHandler):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def analyze_conversation_old(
+        self,
+        emails,
+        now=None,
+        debug_level=0,
+    ):
         """Decide whether a reponse is due.
 
         This agent gets the "From", "Date" and "body" attributes of each
         email in `emails` and the current date/time.
+
+        debug_level:
+            0: no debug output
+            1: show user prompt and debug information
+            2: also show system prompt
+            3: skip LLM call
 
         It returns two values in json format:
         - response_is_due (bool): whether it would be appropriate to repond to the last
@@ -290,8 +341,6 @@ class LLMHandler:
         - probability (float):    likelihood that the user expects a response or reminder
                                   from the assistant right now.
         """
-        model_id = model_id or self.model_id
-
         system_prompt = """
             You are an AI assistant that helps determine when to respond to email conversations.
 
@@ -314,22 +363,22 @@ class LLMHandler:
         if len(emails) == 0:
             print("EMPTY list of emails!")
             return
-        if emails[-1].get("From", "Unknown") == bot_address:
+        if emails[-1].get("role", "Unknown") == 'assistant':
             # Don't respond to self
             return dict(response_is_due=False, probability=0.0)
-        if (len(emails) == 1) and (emails[0].get("From", "Unknown") != bot_address):
+        if (len(emails) == 1) and (emails[0].get("role", "user") == 'user'):
             # Always respond to first user mail
             return dict(response_is_due=True, probability=1.0)
 
         # Create the user prompt with the email history
-        email_history = format_emails(emails, style='json', bot_address=bot_address)
+        email_history = format_emails(emails, style='json')
         now = now or datetime.now().astimezone()
         user_prompt = (
             "Here is the email conversation history:\n"
             f"{email_history}\n"
             f"\nCurrent time: {email.utils.format_datetime(now)[:-9]}\n\n"
             "Based on this information, determine if a response is due now."
-            )
+        )
 
         response_format = {
             "type": "json_schema",
@@ -341,23 +390,27 @@ class LLMHandler:
                     "properties": {
                         "response_is_due": {
                             "type": "boolean",
-                            "description": ("Whether it's appropriate to respond to the last "
-                                            "user email right now")
+                            "description": (
+                                "Whether it's appropriate to respond to the last "
+                                "user email right now"
+                            ),
                         },
                         "probability": {
                             "type": "number",
-                            "description": ("Likelihood between 0 and 1 that the user expects "
-                                            "a response or reminder from the assistant by now")
-                        }
+                            "description": (
+                                "Likelihood between 0 and 1 that the user expects "
+                                "a response or reminder from the assistant by now"
+                            ),
+                        },
                     },
                     "required": ["response_is_due", "probability"],
-                    "additionalProperties": False
-                }
-            }
+                    "additionalProperties": False,
+                },
+            },
         }
 
         openrouter_json = {
-            "model": model_id,
+            "model": self.model_id,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
@@ -365,40 +418,42 @@ class LLMHandler:
             "temperature": 0.1,  # Lower temperature for more deterministic responses
         }
 
-        if model_id in models_supporting_structured_output:
-            openrouter_json['response_format'] = response_format
-        else:
-            print(f"WARNING: schedule_response uses model w/o response_format: {model_id}")
+        if self.model_id in models_supporting_structured_output:
+            openrouter_json["response_format"] = response_format
+        elif debug_level >= 1:
+            print(
+                f"WARNING: schedule_response uses model w/o response_format: {self.model_id}"
+            )
 
-        if verbose:
+        if debug_level >= 2:
             print(f"System Prompt:\n{system_prompt}")
+        if debug_level >= 1:
             print(f"User Prompt:\n{user_prompt}")
-
-        if DEBUG:
-            return {'response_is_due': False, 'probability': 0.5}  # Skip LLM call
+        if debug_level >= 3:
+            return {"response_is_due": False, "probability": 0.5}  # Skip LLM call
 
         try:
             response = requests.post(
                 self.openrouter_base_url,
                 headers=self.openrouter_headers,
                 json=openrouter_json,
-                timeout=self.llm_timeout
+                timeout=self.llm_timeout,
             )
 
             if response.status_code == 200:
                 if "choices" not in response.json():
                     # Handle errors from LLM provider
-                    if 'error' in response.json():
-                        error = response.json()['error']
-                        print(error['message'])
-                        if 'metadata' in error and 'raw' in error['metadata']:
-                            print(error['metadata']['raw'])
+                    if "error" in response.json():
+                        error = response.json()["error"]
+                        print(error["message"])
+                        if "metadata" in error and "raw" in error["metadata"]:
+                            print(error["metadata"]["raw"])
                     else:
                         print(response.json())
                     return {
                         "response_is_due": False,
                         "probability": 0.0,
-                        "error": f"Error: {response.status_code} - {response.text}"
+                        "error": f"Error: {response.status_code} - {response.text}",
                     }
                 content = response.json()["choices"][0]["message"]["content"].strip()
 
@@ -407,13 +462,15 @@ class LLMHandler:
                     result = json.loads(content)
                     # Validate the response has the required fields
                     if "response_is_due" in result and "probability" in result:
-                        result["probability"] = np.clip(result["probability"], .05, .95).item()
+                        result["probability"] = np.clip(
+                            result["probability"], 0.05, 0.95
+                        ).item()
                         return result
                     else:
                         return {
                             "response_is_due": False,
                             "probability": 0.0,
-                            "error": "Invalid response format from LLM"
+                            "error": "Invalid response format from LLM",
                         }
                 except json.JSONDecodeError:
                     # If the response isn't valid JSON, try to extract it using regex
@@ -425,35 +482,46 @@ class LLMHandler:
 
                     if response_match and probability_match:
                         return {
-                            "response_is_due": response_match.group(1).lower() == "true",
+                            "response_is_due": response_match.group(1).lower()
+                            == "true",
                             "probability": float(probability_match.group(1)),
                         }
                     else:
                         return {
                             "response_is_due": False,
                             "probability": 0.0,
-                            "error": "Failed to parse LLM response"
+                            "error": "Failed to parse LLM response",
                         }
             else:
                 return {
                     "response_is_due": False,
                     "probability": 0.0,
-                    "error": f"Error: {response.status_code} - {response.text}"
+                    "error": f"Error: {response.status_code} - {response.text}",
                 }
 
         except Exception as e:
             return {
                 "response_is_due": False,
                 "probability": 0.0,
-                "error": f"Error: {str(e)}"
+                "error": f"Error: {str(e)}",
             }
 
-    def schedule_response_v2(self, emails, model_id=None, bot_address='acp@startup.com', now=None,
-                             verbose=False, DEBUG=False):
+    def analyze_conversation(
+        self,
+        emails,
+        now=None,
+        debug_level=0,
+    ):
         """Decide whether a reponse is due.
 
         This agent gets the "From", "Date" and "body" attributes of each
         email in `emails` and the current date/time.
+
+        debug_level:
+            0: no debug output
+            1: show user prompt and debug information
+            2: also show system prompt
+            3: skip LLM call
 
         It returns two values in json format:
         - response_is_due (bool): whether it would be appropriate to repond to the last
@@ -464,8 +532,6 @@ class LLMHandler:
         The system prompt has auxiliary tasks that might be easier for the LLM, the return values are
         then inferred deterministically.
         """
-        model_id = model_id or self.model_id
-
         system_prompt = """
             You support an AI assistant that plays the role of an accountability partner for a human user.
             Your task is to help the assistant with sending responses to the user timely and schedule
@@ -536,7 +602,7 @@ class LLMHandler:
         system_prompt = textwrap.dedent(system_prompt)
 
         # Create the user prompt with all email messages in human-readable format
-        user_prompt = format_emails(emails, style="human", bot_address=bot_address)
+        user_prompt = format_emails(emails, style="human")
 
         # "analysis": auxiliary task: allows non-reasoning LLMs to think, used only for debugging
         # "assistant_is_next": auxiliary task, affects how "date" is evaluated
@@ -550,25 +616,25 @@ class LLMHandler:
                     "properties": {
                         "analysis": {
                             "type": "string",
-                            "description": "Summarize open questions (if any), think step by step: who will answer next?"
+                            "description": "Summarize open questions (if any), think step by step: who will answer next?",
                         },
                         "assistant_is_next": {
                             "type": "boolean",
-                            "description": "Whether the next message might be send by the agent"
+                            "description": "Whether the next message might be send by the agent",
                         },
                         "date": {
                             "type": "string",
-                            "description": "Expected date and time of next message in email (RFC 2822) format"
-                        }
+                            "description": "Expected date and time of next message in email (RFC 2822) format",
+                        },
                     },
                     "required": ["analysis", "assistant_is_next", "date"],
-                    "additionalProperties": False
-                }
-            }
+                    "additionalProperties": False,
+                },
+            },
         }
 
         openrouter_json = {
-            "model": model_id,
+            "model": self.model_id,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
@@ -576,17 +642,26 @@ class LLMHandler:
             "temperature": 0.1,  # Lower temperature for more deterministic responses
         }
 
-        if model_id in models_supporting_structured_output:
-            openrouter_json['response_format'] = response_format
+        if self.model_id in models_supporting_structured_output:
+            openrouter_json["response_format"] = response_format
+            expected_structured_output = True
         else:
-            print(f"WARNING: schedule_response uses model w/o response_format: {model_id}")
+            expected_structured_output = False
 
-        if verbose:
+        print(f"analyze_conversation: Using model {self.model_id}"
+              f"{' (structured output)' if expected_structured_output else ''}")
+
+        if debug_level >= 2:
             print(f"\n\nSystem Prompt:\n{system_prompt}")
+        if debug_level >= 1:
             print(f"User Prompt:\n{user_prompt}")
-
-        if DEBUG:
-            return {'reasoning': 'DEBUG', 'response_is_due': False, 'probability': 0.5}  # Skip LLM call
+        if debug_level >= 3:
+            # Skip LLM call
+            return {
+                "reasoning": "DEBUG",
+                "response_is_due": False,
+                "probability": 0.5,
+            }
 
         # OpenRouter request
         try:
@@ -594,7 +669,7 @@ class LLMHandler:
                 self.openrouter_base_url,
                 headers=self.openrouter_headers,
                 json=openrouter_json,
-                timeout=self.llm_timeout
+                timeout=self.llm_timeout,
             )
         except Exception as e:
             return dict(error=f"OpenRouter Error: {str(e)}")
@@ -620,7 +695,7 @@ class LLMHandler:
             print(f"Error: no message/content found in LLM response {response.json()["choices"][0]}")
             return dict(error=f"Error: {e}")
 
-        self.show_usage(model_id, [system_prompt, user_prompt], content, response)
+        self.show_usage([system_prompt, user_prompt], content, response)
 
         # Parse the JSON structured output
         try:
@@ -633,7 +708,8 @@ class LLMHandler:
 
         except json.JSONDecodeError:
             # If the response isn't valid JSON, try to extract it using regex
-            print("WARNING: LLM did not return JSON, trying with regex...")
+            if debug_level >= 1:
+                print("Warning: LLM did not return JSON, trying with regex...")
             assistant_is_next_pattern = r'"assistant_is_next"\s*:\s*(true|false)'
             date_pattern = r'"date"\s*:\s*"([^"]+)"'
 
@@ -645,19 +721,20 @@ class LLMHandler:
                     "assistant_is_next": assistant_match.group(1).lower() == "true",
                     "date": date_match.group(1),
                 }
-                return self._evaluate_output(result, now)
+                return self._evaluate_output(result, now, debug_level)
             else:
-                print("ERROR: Also regex failed to match LLM response:")
+                print("Error: regex failed to match unstructured LLM response:")
                 print(textwrap.indent(content, '    '))
                 return dict(error="Failed to parse LLM response")
 
-    def _evaluate_output(self, result, now=None):
+    def _evaluate_output(self, result, now=None, debug_level=0):
         """
         Validates the output from the LLM and converts it to the expected format.
 
         Args:
             result (dict): The parsed JSON result from the LLM with 'assistant_is_next' and 'date' fields
             now (datetime, optional): Current datetime. Defaults to datetime.now().
+            debug_level (int, optional): Pring debug information if > 0.
 
         Returns:
             dict: Dictionary with 'response_is_due', 'probability', 'scheduled_for', and optional 'error' fields
@@ -678,19 +755,25 @@ class LLMHandler:
                 # If that fails, try a more flexible approach
                 try:
                     from dateutil import parser
+
                     predicted_date = parser.parse(predicted_date_str)
                 except (ValueError, ImportError):
                     return dict(error="Invalid date format")
 
             # If the parsed date is naive, make it aware using the local timezone
             if predicted_date.tzinfo is None:
-                print("adding system timezone to predicted_date")
                 predicted_date = predicted_date.replace(tzinfo=now.tzinfo)
+                if debug_level >= 1:
+                    print("adding system timezone to predicted_date")
 
             # DEBUG output
-            print(f"\nFields in result: {list(result.keys())}")
-            print(f"Analysis: {analysis}")
-            print(f"                       predicted DATE: {predicted_date}   SENDER: {'assistant' if result['assistant_is_next'] else 'user'}")
+            if debug_level >= 1:
+                print(f"\nFields in result: {list(result.keys())}")
+                print(f"Analysis: {analysis}")
+                print(
+                    f"                       predicted DATE: {predicted_date}   "
+                    f"SENDER: {'assistant' if result['assistant_is_next'] else 'user'}"
+                )
 
             # Calculate time till scheduled response in minutes
             min_ahead = (predicted_date - now).total_seconds() / 60
@@ -698,16 +781,26 @@ class LLMHandler:
             # If assistant is next, respond now or when scheduled, otherwise wait 90 min
             patience = 0 if result.get("assistant_is_next", True) else 90
             if min_ahead + patience <= 0:
-                print(f"Deterministic logic: min_ahead ({min_ahead}) + patience ({patience}) <= 0, reponse is due.")  # DEBUG
+                if debug_level >= 1:
+                    print(f"Deterministic logic: min_ahead ({min_ahead}) + patience "
+                          f"({patience}) <= 0, reponse is due.")
                 return {"response_is_due": True, "probability": 1.0}
             else:
-                print(f"Deterministic logic: min_ahead ({min_ahead}) + patience ({patience}) > 0, reponse is not due.")  # DEBUG
+                if debug_level >= 1:
+                    print(f"Deterministic logic: min_ahead ({min_ahead}) + patience "
+                          f"({patience}) > 0, reponse is not due.")
                 return {"response_is_due": False, "probability": 0.0, "scheduled_for": predicted_date}
 
         except Exception as e:
             return dict(error=f"Error validating output: {str(e)}")
 
     # TODO: moderation should take subject into account as well
+
+
+class EmailModerator(LLMHandler):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
     def moderate_email(self, email_content):
         """Check if email content is appropriate using OpenAI's moderation API."""
         try:
@@ -759,10 +852,14 @@ class LLMHandler:
         except Exception as e:
             return False, f"Error during moderation: {str(e)}"
 
-    def generate_response(self, emails, bot_address, user_name="User", bot_name="Accountability Partner", model_id=None):
-        """Generate a chat completion with the role of an Accountability Partner."""
-        model_id = model_id or self.model_id
 
+class ResponseGenerator(LLMHandler):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def generate_response(self, emails, user_name="User", bot_name="Accountability Partner",
+                          applied_policy=None):
+        """Generate a chat completion with the role of an Accountability Partner."""
         system_prompt = f"""
         You are an accountability partner that helps users achieve their goals through email communication.
         Your name is {bot_name}.
@@ -777,17 +874,36 @@ class LLMHandler:
         If the email is a "start" message, welcome the user and acknowledge their goal.
         If it's an update, provide encouragement and ask about next steps or challenges.
         Only write the body text of the email, no headers, no footers, no PS.
-        """
+        """.strip()
         system_prompt = textwrap.dedent(system_prompt)
 
         messages = [{"role": "system", "content": system_prompt}]
-        chat_formatted_emails = format_emails(emails, style='chat', bot_address=bot_address)
+        chat_formatted_emails = format_emails(emails, style='chat')
         for msg in chat_formatted_emails:
             assert isinstance(msg, dict)
             assert 'role' in msg
             assert 'content' in msg
         messages.extend(chat_formatted_emails)
 
+        # Append tooluse message from scheduler
+        if applied_policy and applied_policy == 'WaitForSchedulePolicy':
+            pass  # Any steering needed?
+        elif applied_policy and applied_policy == 'EarlyReminderPolicy':
+            messages.append({"role": "tool", "content": (
+                "Today the user wanted to check-in, a short early reminder might be due now.")})
+        elif applied_policy and applied_policy == 'SecondReminderPolicy':
+            messages.append({"role": "tool", "content": (
+                "assistant has already sent a reminder, but the user has not checked in yet. "
+                "This is the last attempt to motivate the user to check in. "
+                "If the user does not check in, the assistant will not send another reminder.")})
+        elif applied_policy and applied_policy == 'LateReminderPolicy':
+            pass  # Any steering needed?
+        elif applied_policy and applied_policy == 'DefaultPolicy':
+            pass  # Any steering needed?
+        elif applied_policy and applied_policy == 'AskAgentPolicy':
+            pass  # Any steering needed?
+
+        print(f'Model: "{self.model_id}"')
         print("Messages sent to response agent:")
         for i, msg in enumerate(messages):
             print(f'{i:03} {msg["role"]}:')
@@ -799,19 +915,20 @@ class LLMHandler:
                 self.openrouter_base_url,
                 headers=self.openrouter_headers,
                 json={
-                    "model": model_id,
+                    "model": self.model_id,
                     "messages": messages,
                     "temperature": 0.7,  # Balanced between creativity and consistency
                 },
-                timeout=self.llm_timeout
+                timeout=self.llm_timeout,
             )
 
             if response.status_code == 200:
                 content = response.json()["choices"][0]["message"]["content"].strip()
-                self.show_usage(model_id, messages, content, response)
+                self.show_usage(messages, content, response)
                 return content
             else:
                 print(f"Error generating response: {response.status_code} - {response.text}")
-
+        except KeyError as e:
+            print(f"KeyError generating response: {e}, response: {response.json()}")
         except Exception as e:
-            print(f"Error generating response: {str(e)}")
+            print(f"Exception generating response: {str(e)}")

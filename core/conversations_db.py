@@ -338,7 +338,9 @@ class ConversationsDB:
                         "date": datetime.strptime(row["date"], "%Y-%m-%d %H:%M:%S"),
                         "role": role,
                         "body": row["body"],
-                        "sorting_timestamp": row["sorting_timestamp"],
+                        "sorting_timestamp": datetime.strptime(
+                            row["sorting_timestamp"], "%Y-%m-%d %H:%M:%S"
+                        ),
                     }
                     conversation["emails"].append(email)
 
@@ -906,3 +908,6 @@ class ConversationsDB:
 # ===================================================================
 if __name__ == "__main__":
     pass
+    # conv_db = ConversationsDB()
+    # conv_db.insert_test_data()
+    # unanalyzed_conversations = conv_db.get_unanalyzed_conversations(track=False)

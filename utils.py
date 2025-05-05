@@ -1,16 +1,96 @@
 import re
 import json
 from datetime import datetime, timezone, timedelta
+from time import perf_counter
 import hashlib
 import textwrap
 import numpy as np
-from email.utils import format_datetime, parsedate_tz, parsedate_to_datetime, formatdate
+from email.utils import format_datetime, parsedate_tz, parsedate_to_datetime, formatdate, parseaddr
 from email.message import Message  # Used for type hinting
 
 
 def is_valid_email_address(email_address):
     pattern = r'^[a-zA-Z0-9._%+-]+@(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$'
     return re.match(pattern, email_address) is not None
+
+
+def process_new_emails(email_handler, validator, moderator, test=False):
+    """Process new emails: check for harmful content and save to database.
+
+    This was in the bot module before and has to integrated into the new email bot."""
+    start_time = perf_counter()
+    emails = email_handler.check_inbox()
+    print(f"Found {len(emails)} emails in inbox")
+
+    for email_msg in emails:
+        message_id = email_msg.get("Message-ID", "")
+
+        # Skip if email already exists in database
+        if email_exists(message_id):
+            print(f"Skipping existing email: {message_id}")
+            continue
+
+        # Extract email information
+        from_header = email_msg.get("From", "")
+        sender_name, sender_email = parseaddr(from_header)
+        to_email_address = email_msg.get("To", "")
+        subject = email_msg.get("Subject", "")
+        body = get_email_body(email_msg)
+        sent_at = get_message_sent_time(email_msg)
+
+        # Validate sender_email address
+        print(f"Validating new email {message_id} ({sender_email}, '{subject}', {sent_at.isoformat()})")
+        if not is_valid_email_address(sender_email):
+            print(f"    invalid email address: {sender_email[:50]}")
+            continue
+
+        # Quickly validate and block spam
+        # In test mode, don't validate emails from myself
+        if test and (sender_email == email_handler.email_address):
+            response, reasoning = 'pass', 'test email from myself'
+        else:
+            response, reasoning = validator.validate_email(sender_email, subject, body)
+        if response == "pass":
+            pass
+        elif response == "block":
+            print(f"Blocked email {message_id} from {sender_email} (spam)")
+            continue
+        else:
+            print("Validation skipped: LLM did not follow instructions")
+            if test:
+                print(f"Response:\n{response}, {reasoning}\n")
+
+        # Moderate the email content
+        if test:
+            # skip moderation
+            is_appropriate, moderation_result = True, 'APPROPRIATE'
+        else:
+            is_appropriate, moderation_result = moderator.moderate_email(body)
+        if not is_appropriate:
+            print(f"Moderation result for {message_id}: {moderation_result}")
+            #save_moderation(
+            #    message_id=message_id,
+            #    timestamp=sent_at,
+            #    sender_name=sender_name,
+            #    from_email_address=sender_email,
+            #    to_email_address=to_email_address or self.email_address,
+            #    email_subject=subject,
+            #    email_body=body,
+            #    email_sent=True,
+            #)
+
+        # Save email information to database
+        save_email(
+            message_id=message_id,
+            timestamp=sent_at,
+            from_email_address=sender_email,
+            to_email_address=to_email_address or email_handler.email_address,
+            email_subject=subject,
+            email_body=body,
+            email_sent=True,
+        )
+        print(f"Saved new email: {message_id} from {sender_email} ({subject})")
+    print(f"Processing new emails completed in {perf_counter() - start_time:.1f} sec.")
 
 
 def get_email_body(email):
@@ -22,24 +102,27 @@ def get_email_body(email):
     return email.get_payload(decode=True).decode()
 
 
-def get_message_sent_time(email):
-    """Grabs "Date" field from `email` and returns a datetime object."""
-    s = email.get("Date", "")
+def get_message_sent_time(email, return_now=False):
+    """Grabs "Date" (or "date") field from `email` and returns a datetime object.
+
+    If `return_now`, returns datetime.now().astimezone() if `email` has no valid Date.
+    """
+    s = email.get("Date", email.get("date", ""))
     if not s:
         print(f'Warning: email has no Date field:\n{email}')
-        return datetime.now().astimezone()
+        return datetime.now().astimezone() if return_now else None
     try:
-        dt = parsedate_to_datetime(s)
+        dt = s if isinstance(s, datetime) else parsedate_to_datetime(s)
     except ValueError as e:
         print("Warning: email Date not in RFC 2822 format, trying isoformat")
         try:
             dt = datetime.fromisoformat(s)
         except ValueError:
             print(f"Error in email Date field: {e}")
-            return datetime.now().astimezone()
+            return datetime.now().astimezone() if return_now else None
     except Exception as e:
         print(f"Error: unexpected datetime error: {e}")
-        return datetime.now().astimezone()
+        return datetime.now().astimezone() if return_now else None
 
     return dt.astimezone() if dt.tzinfo is None else dt
 
@@ -71,7 +154,7 @@ def binary_cross_entropy(y_true, y_pred, eps=1e-15):
     return -np.mean(y_true * np.log(y_pred) + (1 - y_true) * np.log(1 - y_pred))
 
 
-def format_emails(emails, style='human_readable', bot_address='acp@startup.com'):
+def format_emails(emails, style='human_readable'):
     """Return str composed of `emails` formatted for prompting
 
     Args:
@@ -86,8 +169,10 @@ def format_emails(emails, style='human_readable', bot_address='acp@startup.com')
     for msg in emails:
         dt = get_message_sent_time(msg)
         formatted_date = format_datetime(dt)[:-9] if dt else "Unknown"
-        sender = "assistant" if (msg.get("From", "Unknown") == bot_address) else "user"
-        body = get_email_body(msg)
+        sender = msg.get("role", "Unknown")
+        body = msg.get("body", "")
+        if not body:
+            print(f"Warning: empty email body ({sender}, {formatted_date})")
 
         if style.lower() == 'json':
             email_history.append({
@@ -104,7 +189,7 @@ def format_emails(emails, style='human_readable', bot_address='acp@startup.com')
             email_history.append(
                 f'From: {sender}\n'
                 f'Date: {formatted_date}\n'
-                f'Content: {body}---'
+                f'Content: {body}\n---'
             )
 
     # Format the final output based on style

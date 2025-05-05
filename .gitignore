@@ -1,5 +1,6 @@
 run_bot.sh
 testing.py
+data
 .env
 *.db
 *.json

@@ -1,245 +1,254 @@
-from time import perf_counter
 from datetime import datetime
 import textwrap
-from database import save_email, email_exists, get_all_schedules, get_emails, set_schedule, get_user_name
-from email_handler import EmailHandler
-from llm_handler import LLMHandler
-import email.utils
-from scheduling import ScheduleProcessor, REMINDER_POLICIES, choose_policy
-from utils import is_valid_email_address, get_email_body, get_message_sent_time, generate_message_id
+from utils import wrap_indent
+from llm_handler import ResponseScheduler, ResponseGenerator
+from scheduling import ScheduleProcessor, REMINDER_POLICIES
 
 
 class Bot:
     """
-    - Fetches new emails, validates, moderates, and saves them in the database
-    - Manages conversations, identified by (user_email_address, email_subject)
-    - Conversations that require immediate response are called "active".
-    - Generates and sends reponse emails for active conversations and scheduled
-      reminders and saves them in the database.
+    Uses the ConversationsDB to manage conversations, schedules, and
+    generate response emails for the user.
 
-    If the bot crashes at any moment, it can be restarted with the database in
-    its current state.
+    The bot can be interrupted and restarted at any moment, its memory (state) is the database.
     """
-    def __init__(self):
-        self.test = False
-        self.email_handler = EmailHandler()
-        self.email_address = self.email_handler.email  # bot address from .env
-        self.name = self.email_address.split('@')
-        self.llm_handler = LLMHandler()
-        self.active_conversations = set()  # (user_email_address, subject)
-        self.ask_agent = set()  # conversations handled by schedule_response agent
+    def __init__(self, conv_db, scheduler=None, generator=None, test=False):
+        self.db = conv_db
+        self.test = test
+        self.track = True  # not self.test: update_data_after_analysis fails if track=False
+        self.scheduler = scheduler or ResponseScheduler()
+        self.generator = generator or ResponseGenerator()
+        self.running_conversations = set()  # conversation_ids handled in this bot iteration
 
-    def process_new_emails(self):
-        """Process new emails: check for harmful content and save to database."""
-        start_time = perf_counter()
-        emails = self.email_handler.check_inbox()
-        print(f"Found {len(emails)} emails in inbox")
+    def analyze_conversations(self):
+        """Let scheduler agent identify running conversations and new schedule agreements.
 
-        for email_msg in emails:
-            message_id = email_msg.get("Message-ID", "")
+        In running conversations, the bot needs to reply asap.
+        Schedules are used to trigger reminder emails.
+        """
+        unanalyzed_conversations = self.db.get_unanalyzed_conversations(self.track)
+        any_errors = False
 
-            # Skip if email already exists in database
-            if email_exists(message_id):
-                print(f"Skipping existing email: {message_id}")
-                continue
+        if not unanalyzed_conversations:
+            # False or empty?
+            reason = ("At least one conversation has unfinished processes."
+                      if isinstance(unanalyzed_conversations, bool)
+                      else "No unanalyzed conversations found.")
+            print(f"Step 1: Skipping conversation analysis: {reason}")
+            return  # TODO: should the bot behave differently if False? Is this redundant with all_processes_completed?
 
-            # Extract email information
-            from_header = email_msg.get("From", "")
-            sender_name, sender_email = email.utils.parseaddr(from_header)
-            to_email_address = email_msg.get("To", "")
-            subject = email_msg.get("Subject", "")
-            body = get_email_body(email_msg)
-            sent_at = get_message_sent_time(email_msg)
+        if self.test:
+            print(f"Step 1: Database returned {len(unanalyzed_conversations)} conversations for analysis...")
 
-            # Validate sender_email address
-            print(f"Validating new email {message_id} ({sender_email}, '{subject}', {sent_at.isoformat()})")
-            if not is_valid_email_address(sender_email):
-                print(f"    invalid email address: {sender_email[:50]}")
-                continue
+        for conversation in unanalyzed_conversations:
+            conversation_id = conversation['conversation_id']
+            subject = conversation['conversation_subject']
+            messages = conversation['emails']
+            new_schedule = None
+            reply_needed = False
 
-            # Quickly validate and block spam
-            # In test mode, don't validate emails from myself
-            if self.test and (sender_email == self.email_address):
-                response, reasoning = 'pass', 'test email from myself'
-            else:
-                response, reasoning = self.llm_handler.validate_email(sender_email, subject, body)
-            if response == "pass":
-                pass
-            elif response == "block":
-                print(f"Blocked email {message_id} from {sender_email} (spam)")
-                continue
-            else:
-                print("Validation skipped: LLM did not follow instructions")
-                if self.test:
-                    print(f"Response:\n{response}, {reasoning}\n")
-
-            # Moderate the email content
             if self.test:
-                # skip moderation
-                is_appropriate, moderation_result = True, 'APPROPRIATE'
-            else:
-                is_appropriate, moderation_result = self.llm_handler.moderate_email(body)
-            if not is_appropriate:
-                print(f"Moderation result for {message_id}: {moderation_result}")
-                save_moderation(
-                    message_id=message_id,
-                    timestamp=sent_at,
-                    sender_name=sender_name,
-                    from_email_address=sender_email,
-                    to_email_address=to_email_address or self.email_address,
-                    email_subject=subject,
-                    email_body=body,
-                    email_sent=True,
-                )
-                print(f"Saved new email from {sender_email} ({subject}). "
-                      f"Delay: {(datetime.now().astimezone() - sent_at).seconds / 60:.1f} min")
+                print(f"\nConversation {conversation_id} ({subject}, {len(messages)} messages, last from {messages[-1]['role']})")
 
-            # Save email information to database
-            save_email(
-                message_id=message_id,
-                timestamp=sent_at,
-                from_email_address=sender_email,
-                to_email_address=to_email_address or self.email_address,
-                email_subject=subject,
-                email_body=body,
-                email_sent=True,
-            )
-            print(f"Saved new email: {message_id} from {sender_email} ({subject})")
+            result = self.scheduler.analyze_conversation(messages, now=None, debug_level=0)
 
-            # Agent needs to decide: respond or set/update schedule?
-            if sender_email == self.email_address:
-                if not self.test:
-                    print(f"Error: received email from myself:\n{email_msg}")
-            else:
+            if 'error' in result:
+                print(f"schedule_response agent failed with {result['error']} "
+                      f"({conversation_id}, '{subject}')")
+                reply_needed = True  # fall back to default: respond to user
+
+            elif result['response_is_due']:
+                reply_needed = True
                 if self.test:
-                    print(f"sender: {sender_email} is not bot: {self.email_address}, adding to ask_agent.")
-                self.ask_agent.add((sender_email, subject))
+                    print("Result: Reply needed.")
 
-        print(f"Processing new emails completed in {perf_counter() - start_time:.1f} sec.")
+            else:
+                new_schedule = result['scheduled_for']
+                if self.test:
+                    print(f"Result: No reply needed. Setting schedule for {new_schedule.isoformat()}")
 
-    def process_schedules(self):
-        """Update active_conversations according to schedules and reminder policy."""
-        schedules = get_all_schedules()
-        print(f"Database returned {len(schedules)} scheduled conversations.")
+            # Future: go full probabilistic
+            if hasattr(self, 'chattiness') and result['probability'] > (1 - self.chattiness):
+                reply_needed = True
+
+            update_complete = self.db.update_data_after_analysis(conversation_id, new_schedule, reply_needed)
+            if update_complete:
+                self.running_conversations.add((conversation_id))
+            else:
+                print(f"Failed to update data after analysis for ({conversation_id}, '{subject}')")
+                any_errors = True
+
+        return any_errors
+
+    def manage_running_conversations(self):
+        """Generate responses for all running conversations.
+
+        Return False if any response could not be generated or saved."""
+        running_conversations = self.db.get_conversations_needing_reply()
+        any_errors = False
+
+        if not running_conversations:
+            print("\nStep 2: Database returned no running conversations.")
+            return any_errors
+        else:
+            print(f"\nStep 2: Database returned {len(running_conversations)} running conversations, generating responses...")
+
+        for conversation in running_conversations:
+            conversation_id = conversation['conversation_id']
+            subject = conversation['conversation_subject']
+            messages = conversation['emails']
+            user_name = conversation['user_name']
+
+            # Generate response
+            print(f"\nConversation {conversation_id} ({user_name}, '{subject}', {len(messages)} messages)")
+            email_body = self.generator.generate_response(messages, user_name=user_name)
+
+            # Handle failure
+            if not email_body:
+                any_errors = True
+                print(f"Failed to generate response email to {user_name} ({subject})")
+                print("Last message:")
+                print(str(messages[-1]))
+                continue
+
+            if self.test:
+                print("Generated response:")
+                print(wrap_indent(email_body, width=80, indentation=8))
+
+            # Save response to database
+            status = self.db.update_data_after_step2(conversation_id, email_body)
+            if status:
+                print(f"Saved response email to {user_name} ({subject})")
+                self.running_conversations.add((conversation_id))
+            else:
+                print(f"Failed to save response email to {user_name} ({subject})")
+                any_errors = True
+
+        return any_errors
+
+    def manage_reminders(self, now=None):
+        """Generate reminders according to schedules and reminder policy.
+
+        No policies will be applied if the conversation has already been processed in
+        earlier steps (running conversations).
+        In rare cases, a policy may analyze a conversation, which may update the schedule.
+
+        TODO:
+        - clarify what get getter returns
+        - are bot emails from step2 (not sent yet) included in the emails list or separate?
+        - check this case: schedule window coincides with running conversation
+        - is datetime.now().astimezone() consistent with emails['date']?
+        """
+        conversations = self.db.get_scheduled_conversations(self.track)
+        print(f"\nStep 3: Database returned {len(conversations)} scheduled conversations.")
 
         processor = ScheduleProcessor()
+        now = now or datetime.now().astimezone()
 
-        for schedule in schedules:
+        for conversation in conversations:
             # Gather relevant information
-            user, subject, due_time, reminder_sent = schedule
-            just_got_user_mail = (user, subject) in self.active_conversations
-            messages = get_emails(user, subject)
+            conversation_id = conversation['conversation_id']
+            schedule = conversation['schedule'].astimezone()  # TODO: call timezone already in conversations_db
+            num_reminders_sent = conversation['num_reminders']
+            last_policy = conversation['last_policy']
+            user_name = conversation['user_name']
+            subject = conversation['conversation_subject']
+            messages = conversation['emails']
+            is_running = False  # TODO: this would be extra information provided by database
+
             if not messages:
-                print(f"Error: conversation ({user, subject}) has schedule but no messages (skipping)")
+                print(f"\nError: conversation {conversation_id} ({user_name}, '{subject}') "
+                      "has schedule but no messages (skipping)")
                 continue
-            now = datetime.now().astimezone()
+
+            if conversation_id in self.running_conversations or is_running:
+                print(f"\nConversation {conversation_id} ({user_name}, '{subject}') "
+                      "is running, skipping policies")
+                continue
+
+            # Check now() is later than last email's sent time
+            last_email_sent_time = messages[-1]['sorting_timestamp']
+            if last_email_sent_time and last_email_sent_time > now:
+                print(f"\nWarning: Conversation {conversation_id} ({user_name}, '{subject}') "
+                      f"last email was sent in the future: {last_email_sent_time} (now is {now})")
 
             # For policy debugging: show relevant information
-            print(f"Trying up to {len(REMINDER_POLICIES)} policies in the following context:")
-            print(f"    schedule: {schedule}")
-            print(f"    last message:")
-            print(textwrap.indent(messages[-1].as_string(), ' ' * 8))
-            print(f"    current time: {now.isoformat()}\n")
+            print(f"\nConversation {conversation_id} ({user_name}, '{subject}'): "
+                  f"Trying up to {len(REMINDER_POLICIES)} policies. Context:")
+            print(f"    schedule:     {schedule}")
+            print(f"    current time: {now.isoformat()}")
+            print(f"    last message:")  # noqa F541
+            print(textwrap.indent(str(messages[-1]), ' ' * 8))
 
-            # Variant (A): try all policies, apply the first that works
+            # Try all policies, apply the first that works
+            applied_policy = None
             for reminder_policy in REMINDER_POLICIES:
                 processor.set_policy(reminder_policy)
                 try:
-                    response_is_due = processor.process_schedule(schedule, 
-                                                                 just_got_user_mail,
-                                                                 messages, 
-                                                                 now)
-                    print(f"{reminder_policy.name} was successful.")
+                    reply_needed = processor.process_schedule(conversation_id,
+                                                              schedule,
+                                                              messages,
+                                                              now,
+                                                              num_reminders_sent,
+                                                              last_policy)
+                    print(f"{reminder_policy.name} was successful (reply_needed: {reply_needed}).")
+                    applied_policy = reminder_policy.name
                     break
                 except Exception as e:
                     print(f"{reminder_policy.name} failed: {e}")
 
-            # Variant (B): use a sophisticated choose_policy function
-            # reminder_policy = choose_policy(schedule, just_got_user_mail, messages, now)
-            # processor.set_policy(reminder_policy)
-            # response_is_due = processor.process_schedule(schedule, just_got_user_mail,
-            #                                              messages, now)
-
-            if self.test:
-                assert isinstance(user, str)  # DEBUG
-                assert user != self.email_address, f'user from schedule was bot!!!'  # DEBUG
-
-            if response_is_due is True:
-                # Policy says that a response is due right now
-                self.active_conversations.add((user, subject))
-                continue
-            elif response_is_due is False:
+            if reply_needed is False:
                 # Schedule does not trigger anything
                 continue
-            else:
-                # Let the schedule_response agent decide what to do
-                self.ask_agent.add((user, subject))
 
-    def manage_conversations(self):
-        """Let schedule_response agent handle potentially active conversations."""
-        for user_email_address, email_subject in self.ask_agent:
-            messages = get_emails(user_email_address, email_subject)
+            # If the policies could not make a decision, analyze the conversation (rare)
+            if reply_needed not in {True, False}:
+                applied_policy = applied_policy or 'analyze'
+                new_schedule = None
+                reply_needed = False
 
-            result = self.llm_handler.schedule_response_v2(messages, bot_address=self.email_address,
-                                                           now=None, verbose=False, DEBUG=False)
+                result = self.scheduler.analyze_conversation(messages, now=None, debug_level=0)
 
-            if self.test:
-                assert isinstance(user_email_address, str)  # DEBUG
-                assert user_email_address != self.email_address, f'user_email_address from ask_agent was bot!!!'  # DEBUG
+                if 'error' in result:
+                    print(f"scheduler agent failed with {result['error']}. "
+                          f"Conversation: {conversation_id} ({user_name}, '{subject}')")
+                    reply_needed = False  # fall back to default: don't send a reminder
 
-            if 'error' in result:
-                print(f"schedule_response agent failed with {result['error']} "
-                      f"({user_email_address}, '{email_subject}')")
-                # On error, fall back to default: respond to user
-                self.active_conversations.add((user_email_address, email_subject))
-            elif result['response_is_due']:
-                self.active_conversations.add((user_email_address, email_subject))
-                print(f"Result: response is DUE, added  ({user_email_address}, '{email_subject}') "
-                      "to active_conversations.")
-            else:
-                scheduled_for = result['scheduled_for']
-                set_schedule(user_email_address, email_subject, scheduled_for, 0)
-                print(f"Result: response is NOT DUE for ({user_email_address}, '{email_subject}'), "
-                      f"schedule set for {scheduled_for.isoformat()}")
+                elif result['response_is_due']:
+                    reply_needed = True
 
-            # Future: go full probabilistic
-            if hasattr(self, 'chattiness') and result['probability'] > (1 - self.chattiness):
-                self.active_conversations.add((user_email_address, email_subject))
+                else:
+                    new_schedule = result['scheduled_for']
+                    print(f"Result: response is NOT DUE for ({conversation_id}, '{subject}'), "
+                          f"schedule set for {new_schedule.isoformat()}")
 
-    def generate_responses(self):
-        """Reply in all active_conversations."""
-        for user_email_address, email_subject in self.active_conversations:
-            messages = get_emails(user_email_address, email_subject)
-            user_name = get_user_name(user_email_address)
+                # Future: go full probabilistic
+                if hasattr(self, 'chattiness') and result['probability'] > (1 - self.chattiness):
+                    reply_needed = True
 
-            email_body = self.llm_handler.generate_response(messages,
-                                                            bot_address=self.email_address,
-                                                            user_name=user_name,
-                                                            bot_name=self.name)
+                # Update database
+                self.db.update_schedule(conversation_id,
+                                        new_schedule,
+                                        num_reminders_sent,
+                                        applied_policy)
 
-            if not email_body:
-                print(f"generate_response agent failed generating response to "
-                      f"{user_email_address} ({email_subject})")
-                print("Last message:")
-                print(messages[-1])
-                # TODO: Send mail to devs...
-                continue
+            if reply_needed:
+                # Generate reminder
+                email_body = self.generator.generate_response(messages,
+                                                              user_name=user_name,
+                                                              applied_policy=applied_policy)
 
-            # Save email information to database
-            timestamp = datetime.now().astimezone()
-            save_email(
-                message_id=generate_message_id(user_email_address, email_subject, timestamp.isoformat()),
-                timestamp=timestamp,
-                from_email_address=self.email_address,
-                to_email_address=user_email_address,
-                email_subject=email_subject,
-                email_body=email_body,
-            )
-            print(f"Saved response email to {user_email_address} ({email_subject})")
+                # Handle failure
+                if not email_body:
+                    print(f"Failed to generate reminder email to {user_name} ({subject})")
+                    print("Last message:")
+                    print(messages[-1])
+                    continue
 
-            # Send email
-            self.email_handler.send_email(
-                to_email=user_email_address,
-                subject=email_subject,
-                body=email_body,
-            )
+                # Save response to database
+                status = self.db.update_data_after_step2(conversation_id, email_body)
+                if status:
+                    print(f"Saved reminder email to {user_name} ({subject})")
+                else:
+                    print(f"Failed to save reminder email to {user_name} ({subject})")
+                    # return  # Stop processing reminders on database error
