@@ -908,6 +908,6 @@ class ConversationsDB:
 # ===================================================================
 if __name__ == "__main__":
     # pass
-    conv_db = ConversationsDB()
-    conv_db.insert_test_data()
-    unanalyzed_conversations = conv_db.get_unanalyzed_conversations(track=False)
+    # conv_db = ConversationsDB()
+    # conv_db.insert_test_data()
+    # unanalyzed_conversations = conv_db.get_unanalyzed_conversations(track=False)
